@@ -13,6 +13,16 @@ and (future) multi-agent orchestration.
 - `src/extensions/worktree/types.ts` — Extension-specific type definitions. No logic, no imports beyond other type files.
 - `skills/` — Agent skill definitions (SKILL.md files).
 
+## Worktree Workflow
+
+All work happens in isolated worktrees — never edit files directly on main.
+
+- **Starting work**: Always create a worktree (`worktree_create` tool or `/wt-new`) before making any changes. If a session starts without an active worktree, create one before editing files.
+- **During work**: Checkpoints are automatic. Use `worktree_status` to check current state.
+- **Switching tasks**: Use `/wt` to switch between active worktrees.
+- **Completing work**: Use `/wt-accept` to squash-merge into main, or `/wt-reject` to discard.
+- **New vs. existing**: If the user's request is unrelated to the current active task, confirm and create a new worktree. Do not mix unrelated changes in one worktree.
+
 ## Code Standards
 
 ### Naming
