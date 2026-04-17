@@ -6,11 +6,50 @@ import {
   commit,
   diffSummary,
   getMainBranch,
+  logOneline,
   mergeSquash,
 } from "../../lib/git.js";
 import type { GitContext, Result } from "../../lib/types.js";
 import { removeTask } from "./manager.js";
-import type { TaskState } from "./types.js";
+import { CHECKPOINT_PREFIX, type TaskState } from "./types.js";
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Strip the checkpoint prefix from a subject line if present.
+ * "checkpoint: add auth flow" → "add auth flow"
+ */
+function stripCheckpointPrefix(subject: string): string {
+  if (subject.startsWith(CHECKPOINT_PREFIX)) {
+    return subject.slice(CHECKPOINT_PREFIX.length).trim();
+  }
+  return subject;
+}
+
+/**
+ * Build a squash-merge commit message with the summary as the subject
+ * and intermediate checkpoint commits listed as bullet points in the body
+ * (matching GitHub's squash-merge format).
+ */
+async function buildSquashMessage(
+  ctx: GitContext,
+  mainBranch: string,
+  task: TaskState,
+  summary: string,
+): Promise<string> {
+  const log = await logOneline(ctx, mainBranch, task.branchName);
+  if (!log.ok || log.value.length === 0) {
+    return summary;
+  }
+
+  const bullets = log.value
+    .reverse()
+    .map((entry) => `* ${stripCheckpointPrefix(entry.subject)}`);
+
+  return `${summary}\n\n${bullets.join("\n")}`;
+}
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -40,7 +79,8 @@ export async function acceptTask(
   const merge = await mergeSquash(mainCtx, task.branchName);
   if (!merge.ok) return merge;
 
-  const commitResult = await commit(mainCtx, summary);
+  const fullMessage = await buildSquashMessage(mainCtx, mainBranch.value, task, summary);
+  const commitResult = await commit(mainCtx, fullMessage);
   if (!commitResult.ok) return commitResult;
 
   const cleanup = await removeTask(mainCtx, task);

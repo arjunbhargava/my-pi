@@ -278,6 +278,43 @@ export async function mergeSquash(ctx: GitContext, branchName: string): Promise<
 }
 
 // ---------------------------------------------------------------------------
+// Log
+// ---------------------------------------------------------------------------
+
+/**
+ * Get one-line log entries between two refs (exclusive fromRef, inclusive toRef).
+ *
+ * @param ctx     - Git context.
+ * @param fromRef - Ancestor ref (exclusive).
+ * @param toRef   - Descendant ref (inclusive).
+ * @returns Array of `{ sha, subject }` objects, newest first.
+ */
+export async function logOneline(
+  ctx: GitContext,
+  fromRef: string,
+  toRef: string,
+): Promise<Result<Array<{ sha: string; subject: string }>>> {
+  const result = await execGit(ctx, [
+    "log",
+    "--oneline",
+    "--format=%H %s",
+    `${fromRef}..${toRef}`,
+  ]);
+  if (result.code !== 0) {
+    return { ok: false, error: `git log failed: ${result.stderr.trim()}` };
+  }
+  const lines = result.stdout.trim().split("\n").filter(Boolean);
+  const entries = lines.map((line) => {
+    const spaceIdx = line.indexOf(" ");
+    return {
+      sha: line.slice(0, spaceIdx),
+      subject: line.slice(spaceIdx + 1),
+    };
+  });
+  return { ok: true, value: entries };
+}
+
+// ---------------------------------------------------------------------------
 // Diffing
 // ---------------------------------------------------------------------------
 
