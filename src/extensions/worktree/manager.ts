@@ -1,0 +1,153 @@
+/**
+ * Worktree lifecycle management.
+ *
+ * Handles creation and removal of task worktrees. Each task gets a
+ * dedicated branch (`task/<slug>`) and a worktree directory inside
+ * a sibling `<repo>-worktrees/` folder.
+ */
+
+import { randomBytes } from "node:crypto";
+import * as path from "node:path";
+
+import {
+  branchExists,
+  createBranch,
+  deleteBranch,
+  getMainBranch,
+  getRepositoryRoot,
+  worktreeAdd,
+  worktreePrune,
+  worktreeRemove,
+} from "../../lib/git.js";
+import type { GitContext, Result } from "../../lib/types.js";
+import {
+  type HarnessState,
+  MAX_SLUG_LENGTH,
+  TASK_BRANCH_PREFIX,
+  type TaskState,
+  WORKTREE_DIR_SUFFIX,
+} from "./types.js";
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Generate a short random hex string for use as a task ID. */
+function generateTaskId(): string {
+  return randomBytes(4).toString("hex");
+}
+
+/**
+ * Convert a human description into a branch-safe slug.
+ *
+ * Lowercases, replaces non-alphanumeric runs with hyphens,
+ * strips leading/trailing hyphens, and truncates.
+ */
+export function slugify(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, MAX_SLUG_LENGTH);
+}
+
+/**
+ * Derive the worktree base directory from the repository root.
+ *
+ * Given `/home/user/projects/my-app`, returns
+ * `/home/user/projects/my-app-worktrees`.
+ */
+export function getWorktreeBaseDir(repoRoot: string): string {
+  return `${repoRoot}${WORKTREE_DIR_SUFFIX}`;
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+/**
+ * Create a new task: branch from main, set up a worktree, return state.
+ *
+ * The worktree is placed at `<repo>-worktrees/<slug>/`.
+ * Fails if the derived branch name already exists.
+ *
+ * @param ctx         - Git context pointing at the **main** worktree.
+ * @param description - Human-readable description of the task.
+ */
+export async function createTask(
+  ctx: GitContext,
+  description: string,
+): Promise<Result<TaskState>> {
+  const repoRoot = await getRepositoryRoot(ctx);
+  if (!repoRoot.ok) return repoRoot;
+
+  const mainBranch = await getMainBranch(ctx);
+  if (!mainBranch.ok) return mainBranch;
+
+  const slug = slugify(description);
+  if (slug.length === 0) {
+    return { ok: false, error: "Description must contain at least one alphanumeric character" };
+  }
+
+  const branchName = `${TASK_BRANCH_PREFIX}${slug}`;
+
+  const exists = await branchExists(ctx, branchName);
+  if (!exists.ok) return exists;
+  if (exists.value) {
+    return { ok: false, error: `Branch '${branchName}' already exists. Use a different description.` };
+  }
+
+  // Create the branch at the tip of main
+  const branchResult = await createBranch(ctx, branchName, mainBranch.value);
+  if (!branchResult.ok) return branchResult;
+
+  // Set up the worktree directory
+  const baseDir = getWorktreeBaseDir(repoRoot.value);
+  const worktreePath = path.join(baseDir, slug);
+
+  const addResult = await worktreeAdd(ctx, worktreePath, branchName);
+  if (!addResult.ok) {
+    // Roll back the branch if worktree creation failed
+    await deleteBranch(ctx, branchName);
+    return addResult;
+  }
+
+  const task: TaskState = {
+    id: generateTaskId(),
+    description,
+    branchName,
+    worktreePath,
+    checkpoints: [],
+    status: "active",
+    createdAt: Date.now(),
+  };
+
+  return { ok: true, value: task };
+}
+
+/**
+ * Remove a task's worktree and branch.
+ *
+ * Prunes stale worktree metadata first so git doesn't complain
+ * about already-deleted directories.
+ *
+ * @param ctx  - Git context pointing at the **main** worktree.
+ * @param task - The task to clean up.
+ */
+export async function removeTask(ctx: GitContext, task: TaskState): Promise<Result<void>> {
+  await worktreePrune(ctx);
+
+  const removeResult = await worktreeRemove(ctx, task.worktreePath);
+  if (!removeResult.ok) return removeResult;
+
+  const branchResult = await deleteBranch(ctx, task.branchName);
+  if (!branchResult.ok) return branchResult;
+
+  return { ok: true, value: undefined };
+}
+
+/** Look up the currently active task, or null if none. */
+export function getActiveTask(state: HarnessState): TaskState | null {
+  if (!state.activeTaskId) return null;
+  return state.tasks.get(state.activeTaskId) ?? null;
+}
