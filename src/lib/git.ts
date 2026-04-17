@@ -261,6 +261,34 @@ export async function worktreePrune(ctx: GitContext): Promise<Result<void>> {
 }
 
 // ---------------------------------------------------------------------------
+// Remotes
+// ---------------------------------------------------------------------------
+
+/**
+ * Push a branch to the remote, setting upstream tracking.
+ *
+ * @param ctx    - Git context.
+ * @param branch - Local branch name to push.
+ * @param remote - Remote name (defaults to "origin").
+ * @param force  - If true, force-push with lease.
+ */
+export async function pushBranch(
+  ctx: GitContext,
+  branch: string,
+  options?: { remote?: string; force?: boolean },
+): Promise<Result<void>> {
+  const remote = options?.remote ?? "origin";
+  const args = ["push", "-u", remote, branch];
+  if (options?.force) args.splice(1, 0, "--force-with-lease");
+
+  const result = await execGit(ctx, args, 30_000);
+  if (result.code !== 0) {
+    return { ok: false, error: `git push failed: ${result.stderr.trim()}` };
+  }
+  return { ok: true, value: undefined };
+}
+
+// ---------------------------------------------------------------------------
 // Merging
 // ---------------------------------------------------------------------------
 

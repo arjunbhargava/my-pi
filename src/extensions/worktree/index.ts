@@ -11,9 +11,10 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { isToolCallEventType } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 
-import { getRepositoryRoot, worktreeList } from "../../lib/git.js";
+import { getMainBranch, getRepositoryRoot, logOneline, pushBranch, worktreeList } from "../../lib/git.js";
 import type { GitContext } from "../../lib/types.js";
 import { acceptTask, getTaskDiff, rejectTask } from "./accept-reject.js";
+import { createPullRequest } from "./pull-request.js";
 import { createCheckpoint } from "./checkpoint.js";
 import { createTask, discoverTasksFromGit, getActiveTask, slugify } from "./manager.js";
 import {
@@ -455,6 +456,69 @@ export default function worktreeExtension(pi: ExtensionAPI): void {
       state.activeTaskId = null;
       persistState();
       ctx.ui.notify(`Accepted: ${activeTask.description} → ${result.value.slice(0, 8)}`, "info");
+    },
+  });
+
+  pi.registerCommand("wt-pr", {
+    description: "Push current task branch and open a GitHub pull request",
+    handler: async (args, ctx) => {
+      if (!repoRoot) {
+        ctx.ui.notify("Not in a git repository.", "error");
+        return;
+      }
+
+      const activeTask = getActiveTask(state);
+      if (!activeTask) {
+        ctx.ui.notify("No active task to open a PR for.", "info");
+        return;
+      }
+
+      const mainBranch = await getMainBranch(gitCtx(repoRoot));
+      if (!mainBranch.ok) {
+        ctx.ui.notify(`Failed: ${mainBranch.error}`, "error");
+        return;
+      }
+
+      // Push the branch
+      ctx.ui.notify(`Pushing ${activeTask.branchName}...`, "info");
+      const push = await pushBranch(gitCtx(activeTask.worktreePath), activeTask.branchName);
+      if (!push.ok) {
+        ctx.ui.notify(`Push failed: ${push.error}`, "error");
+        return;
+      }
+
+      // Build PR title and body
+      const rawTitle = args?.trim();
+      let title: string;
+      if (!rawTitle) {
+        const input = await ctx.ui.input("PR title:", activeTask.description);
+        if (!input) return;
+        title = input;
+      } else {
+        title = rawTitle;
+      }
+
+      const log = await logOneline(gitCtx(repoRoot), mainBranch.value, activeTask.branchName);
+      let body = "";
+      if (log.ok && log.value.length > 0) {
+        const bullets = log.value
+          .reverse()
+          .map((entry) => `* ${entry.subject}`);
+        body = bullets.join("\n");
+      }
+
+      // Create the PR
+      const pr = await createPullRequest(
+        gitCtx(activeTask.worktreePath),
+        activeTask.branchName,
+        { title, body, baseBranch: mainBranch.value },
+      );
+      if (!pr.ok) {
+        ctx.ui.notify(`PR creation failed: ${pr.error}`, "error");
+        return;
+      }
+
+      ctx.ui.notify(`PR opened: ${pr.value.url}`, "info");
     },
   });
 
