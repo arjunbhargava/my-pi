@@ -16,6 +16,7 @@ import {
   getMainBranch,
   getRepositoryRoot,
   worktreeAdd,
+  worktreeList,
   worktreePrune,
   worktreeRemove,
 } from "../../lib/git.js";
@@ -150,4 +151,55 @@ export async function removeTask(ctx: GitContext, task: TaskState): Promise<Resu
 export function getActiveTask(state: HarnessState): TaskState | null {
   if (!state.activeTaskId) return null;
   return state.tasks.get(state.activeTaskId) ?? null;
+}
+
+/**
+ * Discover task worktrees from git that aren't already tracked in state.
+ *
+ * Scans `git worktree list` for branches matching the `task/` prefix
+ * and creates TaskState entries for any that the session doesn't know
+ * about. This allows a new pi instance to pick up worktrees created
+ * by another session.
+ *
+ * @param ctx   - Git context pointing at the **main** worktree.
+ * @param state - Current harness state (mutated in place with new tasks).
+ * @returns Number of newly discovered tasks.
+ */
+export async function discoverTasksFromGit(
+  ctx: GitContext,
+  state: HarnessState,
+): Promise<Result<number>> {
+  const worktrees = await worktreeList(ctx);
+  if (!worktrees.ok) return worktrees;
+
+  const knownPaths = new Set(
+    Array.from(state.tasks.values()).map((t) => t.worktreePath),
+  );
+
+  let discoveredCount = 0;
+
+  for (const wt of worktrees.value) {
+    if (wt.isMainWorktree) continue;
+    if (!wt.branch?.startsWith(TASK_BRANCH_PREFIX)) continue;
+    if (knownPaths.has(wt.path)) continue;
+
+    // Derive a description from the branch name slug
+    const slug = wt.branch.slice(TASK_BRANCH_PREFIX.length);
+    const description = slug.replace(/-/g, " ");
+
+    const task: TaskState = {
+      id: generateTaskId(),
+      description,
+      branchName: wt.branch,
+      worktreePath: wt.path,
+      checkpoints: [],
+      status: "active",
+      createdAt: Date.now(),
+    };
+
+    state.tasks.set(task.id, task);
+    discoveredCount++;
+  }
+
+  return { ok: true, value: discoveredCount };
 }

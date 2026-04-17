@@ -15,7 +15,7 @@ import { getRepositoryRoot, worktreeList } from "../../lib/git.js";
 import type { GitContext } from "../../lib/types.js";
 import { acceptTask, getTaskDiff, rejectTask } from "./accept-reject.js";
 import { createCheckpoint } from "./checkpoint.js";
-import { createTask, getActiveTask, slugify } from "./manager.js";
+import { createTask, discoverTasksFromGit, getActiveTask, slugify } from "./manager.js";
 import {
   CONTEXT_MESSAGE_TYPE,
   type HarnessState,
@@ -99,6 +99,16 @@ export default function worktreeExtension(pi: ExtensionAPI): void {
     }
     repoRoot = rootResult.value;
     state = restoreState(ctx.sessionManager.getEntries());
+
+    // Discover worktrees created by other sessions
+    const discovered = await discoverTasksFromGit(gitCtx(repoRoot), state);
+    if (discovered.ok && discovered.value > 0) {
+      persistState();
+      ctx.ui.notify(
+        `Discovered ${discovered.value} task(s) from existing worktrees.`,
+        "info",
+      );
+    }
   });
 
   pi.on("before_agent_start", async (event, _ctx) => {

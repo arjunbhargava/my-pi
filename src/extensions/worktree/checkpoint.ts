@@ -12,29 +12,41 @@ import type { GitContext, Result } from "../../lib/types.js";
 import { CHECKPOINT_PREFIX, type CheckpointRecord } from "./types.js";
 
 // ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-/** Commit messages longer than this are truncated with an ellipsis. */
-const MAX_COMMIT_SUBJECT_LENGTH = 72;
-
-// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
 /**
- * Build a commit message from a user prompt or description.
- * Uses the first line of the description, truncated to fit in a
- * standard git subject line.
+ * Condense a raw user prompt into a clean commit message.
+ *
+ * Strips filler words, collapses whitespace, lowercases, and produces
+ * a description that reads as "what changed" rather than echoing the
+ * verbatim request. The full prompt is preserved in the commit body
+ * for traceability.
+ */
+function summarizePrompt(rawPrompt: string): string {
+  // Collapse whitespace and take meaningful content
+  const collapsed = rawPrompt.replace(/\s+/g, " ").trim();
+
+  // Strip common conversational prefixes
+  const cleaned = collapsed
+    .replace(/^(please|can you|could you|i want you to|go ahead and|let'?s|now|also|ok|hey|hi)\s+/i, "")
+    .replace(/^(make sure (that|to)?|i need you to|i'd like you to)\s+/i, "")
+    .trim();
+
+  // Lowercase the first character for commit-message style
+  const summary = cleaned.charAt(0).toLowerCase() + cleaned.slice(1);
+
+  // Strip trailing period — commit messages don't end with one
+  return summary.replace(/\.$/, "");
+}
+
+/**
+ * Build a full commit message with a subject line and the original
+ * prompt preserved in the body for traceability.
  */
 function formatCommitMessage(description: string): string {
-  const firstLine = description.split("\n")[0].trim();
-  const subject =
-    firstLine.length <= MAX_COMMIT_SUBJECT_LENGTH
-      ? firstLine
-      : firstLine.slice(0, MAX_COMMIT_SUBJECT_LENGTH - 3) + "...";
-
-  return `${CHECKPOINT_PREFIX} ${subject}`;
+  const subject = `${CHECKPOINT_PREFIX} ${summarizePrompt(description)}`;
+  return `${subject}\n\nOriginal prompt:\n${description.trim()}`;
 }
 
 // ---------------------------------------------------------------------------
