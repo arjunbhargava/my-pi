@@ -8,11 +8,26 @@ Every time you ask pi to work on a feature, my-pi:
 
 1. **Creates a worktree** — an isolated working directory on its own git branch, so your main branch stays clean
 2. **Checkpoints automatically** — commits a snapshot after each agent interaction, giving you full undo history
-3. **Accepts or rejects** — when a feature is done, squash-merge it into main with one command, or discard it entirely
+3. **Discovers existing worktrees** — detects task worktrees created by other pi sessions so you can switch between them seamlessly
+4. **Accepts or rejects** — when a feature is done, squash-merge it into main with one command, or discard it entirely
 
 ## Installation
 
-Reference my-pi as a package in any project's `.pi/settings.json`:
+### For the current project (developing my-pi itself)
+
+Create `.pi/settings.json` in the repo root:
+
+```json
+{
+  "extensions": ["../src/extensions/worktree"]
+}
+```
+
+Paths in `.pi/settings.json` resolve relative to the `.pi/` directory, so `../src/` reaches the repo root.
+
+### For other projects
+
+Reference my-pi as a package in the project's `.pi/settings.json`:
 
 ```json
 {
@@ -20,11 +35,19 @@ Reference my-pi as a package in any project's `.pi/settings.json`:
 }
 ```
 
-Or load it directly for a single session:
+This uses the `pi.extensions` field in my-pi's `package.json` to discover the extension.
+
+### One-shot testing
+
+Load the extension directly for a single session:
 
 ```bash
 pi -e /path/to/my-pi/src/extensions/worktree/index.ts
 ```
+
+### What does NOT work
+
+Symlinking into `.pi/extensions/` does not work because Node's module resolution resolves imports relative to the symlink location, not the target. The extension's relative imports (`../../lib/git.js`) break.
 
 ## Usage
 
