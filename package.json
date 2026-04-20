@@ -4,7 +4,8 @@
   "private": true,
   "pi": {
     "extensions": [
-      "./src/extensions/worktree/index.ts"
+      "./src/extensions/worktree/index.ts",
+      "./src/extensions/agents/index.ts"
     ],
     "skills": [
       "./skills"
