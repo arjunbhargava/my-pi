@@ -11,6 +11,10 @@ This project uses git worktrees to isolate feature work. Each task gets its own
 worktree — a separate directory on a dedicated branch. The main branch stays clean
 and is never committed to directly.
 
+Task state is shared across pi sessions via an atomic shared state file
+(`<repo>-worktrees/.harness.json`). This means multiple pi instances can see
+each other's worktrees, descriptions, and checkpoint history without conflicts.
+
 ## Before Starting Work
 
 1. Run `worktree_status` to check the current context
@@ -45,7 +49,31 @@ The user manages task lifecycle via slash commands:
 - `/wt-reject` — discards the worktree and branch
 - `/wt` — switches between active tasks
 
+There is also an **auto-accept mode** that automatically merges the task branch
+into main at the end of each agent turn (after checkpointing). The current mode
+is shown in the powerline toolbar as `[wt: auto-accept]` or `[wt: manual]`.
+
 You do not need to call these. Inform the user when a task feels complete so they can decide.
+
+## Cross-Session State
+
+Worktree metadata is persisted in two places:
+1. **Pi session entries** — restored when the same session resumes.
+2. **Shared state file** (`<repo>-worktrees/.harness.json`) — read by all pi
+   instances on startup so tasks created in one session appear in another.
+
+The shared file uses atomic writes (write-to-temp, then rename) to avoid
+corruption when multiple instances write simultaneously. Git remains the source
+of truth for which worktrees exist; the shared file provides supplementary
+metadata like descriptions and checkpoint history.
+
+On startup the extension merges tasks from both the shared file and git
+discovery, notifying how many new tasks were found.
+
+Additionally, tools and commands that read the task list (e.g., `worktree_status`,
+`worktree_list`, `/wt`) refresh from the shared state file on demand before
+returning results. This ensures you always see up-to-date tasks from other
+sessions without requiring a restart.
 
 ## Key Principles
 
@@ -54,3 +82,5 @@ You do not need to call these. Inform the user when a task feels complete so the
 - Let the extension handle checkpointing automatically
 - Use `worktree_status` to orient yourself at the start of a session
 - When uncertain whether a request is a new task, ask the user
+- Tasks are visible across pi sessions — another instance may already be working on a worktree
+- Auto-accept mode status is shown in the powerline toolbar
