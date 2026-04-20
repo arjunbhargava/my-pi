@@ -119,6 +119,11 @@ export default function worktreeExtension(pi: ExtensionAPI): void {
     async removeFromSharedState(taskId: string) {
       if (repoRoot) await removeTaskFromSharedState(repoRoot, taskId);
     },
+    async refreshFromSharedState() {
+      if (!repoRoot) return;
+      await mergeFromSharedState();
+      await discoverTasksFromGit(gitCtx(repoRoot), state);
+    },
   };
 
   // -----------------------------------------------------------------------

@@ -45,6 +45,7 @@ export function registerWorktreeCommands(es: ExtensionState, register: CommandRe
   register("wt", {
     description: "Switch between active task worktrees",
     handler: async (_args, ctx) => {
+      await es.refreshFromSharedState();
       const activeTasks = Array.from(es.state.tasks.values()).filter((t) => t.status === "active");
 
       if (activeTasks.length === 0) {

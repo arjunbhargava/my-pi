@@ -47,6 +47,9 @@ export interface ExtensionState {
 
   /** Remove a task from the shared state file. */
   removeFromSharedState(taskId: string): Promise<void>;
+
+  /** Merge tasks from the shared state file and git into in-memory state. */
+  refreshFromSharedState(): Promise<void>;
 }
 
 /**

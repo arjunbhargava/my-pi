@@ -51,6 +51,7 @@ export function registerWorktreeTools(
         return { content: [{ type: "text", text: "Not in a git repository." }], details: {} };
       }
 
+      await es.refreshFromSharedState();
       const activeTask = getActiveTask(es.state);
       const allTasks = Array.from(es.state.tasks.values()).filter((t) => t.status === "active");
 
@@ -143,6 +144,7 @@ export function registerWorktreeTools(
         return { content: [{ type: "text", text: "Not in a git repository." }], details: {} };
       }
 
+      await es.refreshFromSharedState();
       const gitWorktrees = await worktreeList(es.gitCtx(es.repoRoot));
       const allTasks = Array.from(es.state.tasks.values());
 
