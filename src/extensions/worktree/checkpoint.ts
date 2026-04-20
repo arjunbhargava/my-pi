@@ -23,7 +23,7 @@ import { CHECKPOINT_PREFIX, type CheckpointRecord } from "./types.js";
  * verbatim request. The full prompt is preserved in the commit body
  * for traceability.
  */
-function summarizePrompt(rawPrompt: string): string {
+export function summarizePrompt(rawPrompt: string): string {
   // Collapse whitespace and take meaningful content
   const collapsed = rawPrompt.replace(/\s+/g, " ").trim();
 

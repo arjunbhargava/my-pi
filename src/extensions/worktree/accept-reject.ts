@@ -6,49 +6,47 @@ import {
   commit,
   diffSummary,
   getMainBranch,
-  logOneline,
   mergeSquash,
 } from "../../lib/git.js";
 import type { GitContext, Result } from "../../lib/types.js";
+import { summarizePrompt } from "./checkpoint.js";
 import { removeTask } from "./manager.js";
-import { CHECKPOINT_PREFIX, type TaskState } from "./types.js";
+import type { TaskState } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
 /**
- * Strip the checkpoint prefix from a subject line if present.
- * "checkpoint: add auth flow" → "add auth flow"
+ * Build a squash-merge commit message with the summary as the subject,
+ * checkpoint history as bullet points, and each checkpoint's full
+ * description preserved in the body for traceability.
  */
-function stripCheckpointPrefix(subject: string): string {
-  if (subject.startsWith(CHECKPOINT_PREFIX)) {
-    return subject.slice(CHECKPOINT_PREFIX.length).trim();
-  }
-  return subject;
-}
-
-/**
- * Build a squash-merge commit message with the summary as the subject
- * and intermediate checkpoint commits listed as bullet points in the body
- * (matching GitHub's squash-merge format).
- */
-async function buildSquashMessage(
-  ctx: GitContext,
-  mainBranch: string,
-  task: TaskState,
-  summary: string,
-): Promise<string> {
-  const log = await logOneline(ctx, mainBranch, task.branchName);
-  if (!log.ok || log.value.length === 0) {
+function buildSquashMessage(task: TaskState, summary: string): string {
+  if (task.checkpoints.length === 0) {
     return summary;
   }
 
-  const bullets = log.value
-    .reverse()
-    .map((entry) => `* ${stripCheckpointPrefix(entry.subject)}`);
+  const sections: string[] = [summary, ""];
 
-  return `${summary}\n\n${bullets.join("\n")}`;
+  // Bullet list of checkpoint subjects (like GitHub squash-merge format)
+  const bullets = task.checkpoints.map((cp) => {
+    const shortSha = cp.sha.slice(0, 8);
+    const subject = summarizePrompt(cp.description);
+    return `* ${shortSha} — ${subject}`;
+  });
+  sections.push(bullets.join("\n"), "");
+
+  // Full checkpoint details for traceability
+  sections.push("Checkpoints:");
+  for (const cp of task.checkpoints) {
+    const date = new Date(cp.timestamp).toISOString();
+    sections.push(`  ${cp.sha.slice(0, 8)} (${date})`);
+    sections.push(`  ${cp.description.trim()}`);
+    sections.push("");
+  }
+
+  return sections.join("\n").trimEnd();
 }
 
 // ---------------------------------------------------------------------------
@@ -79,7 +77,7 @@ export async function acceptTask(
   const merge = await mergeSquash(mainCtx, task.branchName);
   if (!merge.ok) return merge;
 
-  const fullMessage = await buildSquashMessage(mainCtx, mainBranch.value, task, summary);
+  const fullMessage = buildSquashMessage(task, summary);
   const commitResult = await commit(mainCtx, fullMessage);
   if (!commitResult.ok) return commitResult;
 
