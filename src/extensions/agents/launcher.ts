@@ -4,9 +4,13 @@
  * Builds the pi command line for each agent, creates the tmux session
  * and windows, and initializes the task queue. This module does not
  * import from `@mariozechner/pi-coding-agent`.
+ *
+ * Agent configuration is passed via a JSON file (not an env var)
+ * to avoid shell escaping issues with nested JSON in command strings.
  */
 
 import { randomBytes } from "node:crypto";
+import { mkdir, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 
 import { createQueue, writeQueue } from "../../lib/task-queue.js";
@@ -26,11 +30,18 @@ import {
 } from "./types.js";
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Constants
 // ---------------------------------------------------------------------------
 
-/** Delay (ms) before sending initial prompts to permanent agents via tmux send-keys. */
-const INITIAL_PROMPT_DELAY_MS = 5000;
+/** Delay (ms) before injecting initial prompts into permanent agent windows. */
+const INITIAL_PROMPT_DELAY_MS = 6000;
+
+/** Directory name for agent config files within the team base dir. */
+const CONFIG_DIR_NAME = ".team-configs";
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 /** Generate a short team ID. */
 function generateTeamId(): string {
@@ -46,30 +57,49 @@ function slugifyGoal(goal: string): string {
     .slice(0, 32);
 }
 
+/** Shell-safe single-quoted string. */
+function sq(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+/**
+ * Write the agent config to a JSON file and return its absolute path.
+ * This avoids embedding large JSON blobs in shell command strings.
+ */
+export async function writeAgentConfigFile(
+  baseDir: string,
+  teamId: string,
+  agentName: string,
+  config: AgentSideConfig,
+): Promise<string> {
+  const configDir = path.join(baseDir, CONFIG_DIR_NAME);
+  await mkdir(configDir, { recursive: true });
+  const configPath = path.join(configDir, `${teamId}-${agentName}.json`);
+  await writeFile(configPath, JSON.stringify(config, null, 2) + "\n", "utf-8");
+  return configPath;
+}
+
+// ---------------------------------------------------------------------------
+// Command building
+// ---------------------------------------------------------------------------
+
 /**
  * Build the shell command to launch a pi agent process.
  *
- * For permanent agents: `pi` (interactive mode) with the agent-side extension
- * and system prompt appended. The agent starts and immediately gets a prompt
- * injected with team context.
- *
- * For workers: `pi -p` (print mode) with a specific task prompt.
+ * The agent config is referenced by file path (not inline JSON) to
+ * avoid shell escaping issues. Workers get `; exec bash` appended
+ * so the tmux window stays open on failure for debugging.
  */
 export function buildAgentCommand(
   agentDef: AgentDefinition,
-  agentConfig: AgentSideConfig,
+  configPath: string,
   agentSideExtensionPath: string,
   opts?: { taskPrompt?: string },
 ): string {
-  const configJson = JSON.stringify(agentConfig);
-  // Shell-escape the JSON for the environment variable
-  const escapedConfig = configJson.replace(/'/g, "'\\''");
-
   const parts: string[] = [
-    `${AGENT_CONFIG_ENV_VAR}='${escapedConfig}'`,
     "pi",
-    "-e", agentSideExtensionPath,
-    "--append-system-prompt", agentDef.filePath,
+    "-e", sq(agentSideExtensionPath),
+    "--append-system-prompt", sq(agentDef.filePath),
   ];
 
   if (agentDef.model) {
@@ -81,23 +111,29 @@ export function buildAgentCommand(
   }
 
   if (agentDef.role === "worker" && opts?.taskPrompt) {
-    parts.push("-p", `"${opts.taskPrompt.replace(/"/g, '\\"')}"`);
+    parts.push("-p", sq(opts.taskPrompt));
   }
 
-  return parts.join(" ");
+  const piCommand = parts.join(" ");
+  const envPrefix = `export ${AGENT_CONFIG_ENV_VAR}=${sq(configPath)}`;
+
+  // Workers: keep window open after exit so errors are visible
+  if (agentDef.role === "worker") {
+    return `bash -c ${sq(`${envPrefix}; ${piCommand}; echo ""; echo "[Worker exited. Press Enter to close.]"; read`)}`;
+  }
+  return `bash -c ${sq(`${envPrefix}; ${piCommand}`)}`;
 }
 
 /**
  * Build a command to launch a worker for a specific task.
- * Workers run in print mode and exit when done.
  */
 export function buildWorkerCommand(
   agentDef: AgentDefinition,
-  agentConfig: AgentSideConfig,
+  configPath: string,
   agentSideExtensionPath: string,
   taskPrompt: string,
 ): string {
-  return buildAgentCommand(agentDef, agentConfig, agentSideExtensionPath, { taskPrompt });
+  return buildAgentCommand(agentDef, configPath, agentSideExtensionPath, { taskPrompt });
 }
 
 // ---------------------------------------------------------------------------
@@ -109,16 +145,9 @@ export function buildWorkerCommand(
  *
  * Creates:
  *   1. A task queue file initialized with the goal
- *   2. A tmux session
- *   3. A status window showing `watch` on the queue file
- *   4. One window per permanent agent
- *
- * @param ctx                    - Execution context (for tmux commands).
- * @param goal                   - High-level objective for the team.
- * @param permanentAgents        - Definitions for permanent agents to launch.
- * @param agentSideExtensionPath - Absolute path to agent-side.ts.
- * @param baseDir                - Directory for the queue file (typically worktree base dir).
- * @param workingDir             - Working directory for agent processes.
+ *   2. Agent config files (one per permanent agent)
+ *   3. A tmux session with a board window + one window per permanent agent
+ *   4. Injects initial prompts after a delay
  */
 export async function launchTeam(
   ctx: ExecContext,
@@ -152,8 +181,10 @@ export async function launchTeam(
   });
   if (!sessionResult.ok) return sessionResult;
 
-  // Start a live view of the queue file in the board window
-  await sendKeys(ctx, tmuxSession, "board", `watch -n 2 'cat ${queuePath} | python3 -m json.tool 2>/dev/null || echo "Waiting for queue..."'`);
+  await sendKeys(
+    ctx, tmuxSession, "board",
+    `watch -n 2 'cat ${sq(queuePath)} | python3 -m json.tool 2>/dev/null || echo "Waiting for queue..."'`,
+  );
 
   const agents: AgentInstance[] = [];
 
@@ -173,7 +204,8 @@ export async function launchTeam(
       agentsDirs,
     };
 
-    const command = buildAgentCommand(agentDef, agentConfig, agentSideExtensionPath);
+    const configPath = await writeAgentConfigFile(baseDir, teamId, agentDef.name, agentConfig);
+    const command = buildAgentCommand(agentDef, configPath, agentSideExtensionPath);
 
     const windowResult = await createWindow(ctx, tmuxSession, agentDef.name, {
       command,
@@ -181,7 +213,6 @@ export async function launchTeam(
     });
 
     if (!windowResult.ok) {
-      // Try to clean up on failure
       await killSession(ctx, tmuxSession);
       return windowResult;
     }
@@ -206,25 +237,13 @@ export async function launchTeam(
     createdAt: Date.now(),
   };
 
-  // Give pi a few seconds to start, then inject initial prompts.
-  // The orchestrator gets the goal; the evaluator is told to wait.
+  // Give pi time to start, then inject initial prompts via send-keys.
+  // Single-line prompts to avoid editor issues.
   setTimeout(async () => {
-    const orchestratorPrompt = [
-      `Your goal: ${goal}`,
-      "",
-      "Read the queue with read_queue, then plan the work by adding tasks.",
-      "After adding tasks, dispatch them to workers and monitor for completion.",
-    ].join("\n");
-
-    const evaluatorPrompt = [
-      "You are the evaluator for this team. Use wait_for_reviews to block",
-      "until workers complete tasks and submit them for review.",
-    ].join(" ");
-
     for (const agentDef of permanentAgents) {
       const prompt = agentDef.name === "orchestrator"
-        ? orchestratorPrompt
-        : evaluatorPrompt;
+        ? `Your goal: ${goal}. Read the queue, plan tasks, dispatch workers, and monitor for completion.`
+        : "Use wait_for_reviews to wait for completed tasks, then review and close or reject them.";
       await sendKeys(ctx, tmuxSession, agentDef.name, prompt);
     }
   }, INITIAL_PROMPT_DELAY_MS);
@@ -234,13 +253,6 @@ export async function launchTeam(
 
 /**
  * Spawn an ephemeral worker in a new tmux window for a specific task.
- *
- * @param ctx                    - Execution context.
- * @param team                   - Running team session.
- * @param workerDef              - Worker agent definition.
- * @param workerName             - Unique instance name (e.g., "worker-abc123").
- * @param taskPrompt             - Task description prompt for the worker.
- * @param agentSideExtensionPath - Absolute path to agent-side.ts.
  */
 export async function spawnWorker(
   ctx: ExecContext,
@@ -264,7 +276,9 @@ export async function spawnWorker(
     agentsDirs: [],
   };
 
-  const command = buildWorkerCommand(workerDef, agentConfig, agentSideExtensionPath, taskPrompt);
+  const baseDir = path.dirname(team.queuePath);
+  const configPath = await writeAgentConfigFile(baseDir, team.teamId, workerName, agentConfig);
+  const command = buildWorkerCommand(workerDef, configPath, agentSideExtensionPath, taskPrompt);
 
   const windowResult = await createWindow(ctx, team.tmuxSession, workerName, {
     command,
@@ -273,22 +287,20 @@ export async function spawnWorker(
 
   if (!windowResult.ok) return windowResult;
 
-  const instance: AgentInstance = {
-    name: workerName,
-    role: "worker",
-    definitionName: workerDef.name,
-    tmuxWindow: workerName,
-    status: "running",
+  return {
+    ok: true,
+    value: {
+      name: workerName,
+      role: "worker",
+      definitionName: workerDef.name,
+      tmuxWindow: workerName,
+      status: "running",
+    },
   };
-
-  return { ok: true, value: instance };
 }
 
 /**
  * Stop a running team by killing its tmux session.
- *
- * @param ctx          - Execution context.
- * @param tmuxSession  - tmux session name to kill.
  */
 export async function stopTeam(
   ctx: ExecContext,

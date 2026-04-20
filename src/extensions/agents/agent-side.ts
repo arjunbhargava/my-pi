@@ -41,14 +41,40 @@ import {
 } from "./types.js";
 
 // ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/** Default timeout (ms) for blocking poll tools. */
+const DEFAULT_POLL_TIMEOUT_MS = 120_000;
+
+// ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 
+/**
+ * Load agent config. The env var may contain:
+ *   - A file path ending in .json → read and parse the file
+ *   - Inline JSON (legacy/testing fallback)
+ */
 function loadConfig(): AgentSideConfig | null {
-  const raw = process.env[AGENT_CONFIG_ENV_VAR];
-  if (!raw) return null;
+  const configRef = process.env[AGENT_CONFIG_ENV_VAR];
+  if (!configRef) return null;
+
+  // File path: read from disk
+  if (configRef.endsWith(".json")) {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const fs = require("node:fs") as typeof import("node:fs");
+      const raw = fs.readFileSync(configRef, "utf-8");
+      return JSON.parse(raw) as AgentSideConfig;
+    } catch {
+      return null;
+    }
+  }
+
+  // Inline JSON fallback
   try {
-    return JSON.parse(raw) as AgentSideConfig;
+    return JSON.parse(configRef) as AgentSideConfig;
   } catch {
     return null;
   }
@@ -76,20 +102,25 @@ function agentLabel(config: AgentSideConfig): string {
 // ---------------------------------------------------------------------------
 
 /**
- * Poll the queue file until a predicate is satisfied or signal aborts.
+ * Poll the queue file until a predicate is satisfied, signal aborts, or timeout.
+ * On timeout, returns the current state (so the LLM can re-assess) rather than an error.
  */
 async function pollUntil(
   queuePath: string,
   predicate: (q: TaskQueue) => boolean,
   signal?: AbortSignal,
+  timeoutMs: number = DEFAULT_POLL_TIMEOUT_MS,
 ): Promise<{ ok: true; value: TaskQueue } | { ok: false; error: string }> {
-  while (!signal?.aborted) {
+  const deadline = Date.now() + timeoutMs;
+  while (!signal?.aborted && Date.now() < deadline) {
     const result = await readQueue(queuePath);
     if (!result.ok) return result;
     if (predicate(result.value)) return result;
     await new Promise((resolve) => setTimeout(resolve, QUEUE_POLL_INTERVAL_MS));
   }
-  return { ok: false, error: "Polling aborted" };
+  if (signal?.aborted) return { ok: false, error: "Polling aborted" };
+  // Timeout: return current state so the agent can decide what to do
+  return await readQueue(queuePath);
 }
 
 // ---------------------------------------------------------------------------
@@ -273,14 +304,22 @@ export default function agentSideExtension(pi: ExtensionAPI): void {
           agentsDirs: config.agentsDirs,
         };
 
+        // Write config to file (avoids shell escaping issues)
+        const { mkdir: mkdirAsync, writeFile: writeFileAsync } = await import("node:fs/promises");
+        const pathMod = await import("node:path");
+        const configDir = pathMod.join(pathMod.dirname(queuePath), ".team-configs");
+        await mkdirAsync(configDir, { recursive: true });
+        const configPath = pathMod.join(configDir, `${config.teamId}-${workerName}.json`);
+        await writeFileAsync(configPath, JSON.stringify(workerConfig, null, 2) + "\n", "utf-8");
+
         const taskPrompt = [
-          `You are ${workerName}. Your assigned task ID is: ${params.taskId}`,
+          `You are ${workerName}. Your assigned task ID is: ${params.taskId}.`,
           "Use read_queue to get your task details, then do the work, then use complete_task when done.",
-        ].join("\n");
+        ].join(" ");
 
         const command = buildWorkerCommand(
           workerDef,
-          workerConfig,
+          configPath,
           config.agentSideExtensionPath,
           taskPrompt,
         );
@@ -310,15 +349,20 @@ export default function agentSideExtension(pi: ExtensionAPI): void {
     pi.registerTool({
       name: "monitor_tasks",
       label: "Monitor Tasks",
-      description: "Block until at least one active task completes (moves to review) or a reviewed task gets rejected (requeued). Returns the updated queue state.",
-      parameters: Type.Object({}),
-      async execute(_id, _params, signal) {
+      description: "Wait for task queue changes (completions, rejections, new tasks). Times out after timeoutSeconds (default 120) and returns the current state. Call again to keep monitoring.",
+      parameters: Type.Object({
+        timeoutSeconds: Type.Optional(Type.Number({ description: "Max seconds to wait. Default 120." })),
+      }),
+      async execute(_id, params, signal) {
+        const timeoutMs = (params.timeoutSeconds ?? 120) * 1000;
+
         const beforeResult = await readQueue(queuePath);
         if (!beforeResult.ok) throw new Error(beforeResult.error);
 
         const activeCountBefore = getTasksByStatus(beforeResult.value, "active").length;
         const reviewCountBefore = getTasksByStatus(beforeResult.value, "review").length;
         const queuedCountBefore = getTasksByStatus(beforeResult.value, "queued").length;
+        const closedCountBefore = beforeResult.value.closed.length;
 
         const pollResult = await pollUntil(
           queuePath,
@@ -326,19 +370,20 @@ export default function agentSideExtension(pi: ExtensionAPI): void {
             const activeNow = getTasksByStatus(q, "active").length;
             const reviewNow = getTasksByStatus(q, "review").length;
             const queuedNow = getTasksByStatus(q, "queued").length;
+            const closedNow = q.closed.length;
             return activeNow !== activeCountBefore
               || reviewNow !== reviewCountBefore
-              || queuedNow !== queuedCountBefore;
+              || queuedNow !== queuedCountBefore
+              || closedNow !== closedCountBefore;
           },
           signal,
+          timeoutMs,
         );
 
-        if (!pollResult.ok) {
-          return { content: [{ type: "text", text: `Monitor ended: ${pollResult.error}` }], details: {} };
-        }
-
+        // Always return the current queue state — even on timeout/abort
+        const summary = pollResult.ok ? getQueueSummary(pollResult.value) : "(queue read failed)";
         return {
-          content: [{ type: "text", text: getQueueSummary(pollResult.value) }],
+          content: [{ type: "text", text: summary }],
           details: {},
         };
       },
@@ -351,13 +396,18 @@ export default function agentSideExtension(pi: ExtensionAPI): void {
     pi.registerTool({
       name: "wait_for_reviews",
       label: "Wait for Reviews",
-      description: "Block until at least one task is in 'review' status. Returns the task(s) ready for review.",
-      parameters: Type.Object({}),
-      async execute(_id, _params, signal) {
+      description: "Wait until at least one task is in 'review' status. Times out after timeoutSeconds (default 120) and returns current state. Call again to keep waiting.",
+      parameters: Type.Object({
+        timeoutSeconds: Type.Optional(Type.Number({ description: "Max seconds to wait. Default 120." })),
+      }),
+      async execute(_id, params, signal) {
+        const timeoutMs = (params.timeoutSeconds ?? 120) * 1000;
+
         const pollResult = await pollUntil(
           queuePath,
           (q) => getTasksByStatus(q, "review").length > 0,
           signal,
+          timeoutMs,
         );
 
         if (!pollResult.ok) {
@@ -365,6 +415,13 @@ export default function agentSideExtension(pi: ExtensionAPI): void {
         }
 
         const reviewTasks = getTasksByStatus(pollResult.value, "review");
+        if (reviewTasks.length === 0) {
+          return {
+            content: [{ type: "text", text: `No tasks in review yet (timed out). Current state:\n${getQueueSummary(pollResult.value)}` }],
+            details: {},
+          };
+        }
+
         const lines = ["Tasks ready for review:\n"];
         for (const t of reviewTasks) {
           lines.push(`${t.id} — ${t.title}`);
