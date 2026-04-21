@@ -117,10 +117,11 @@ export async function writeAgentLaunchScript(
     "",
   ];
 
+  // System prompt is injected via the extension's before_agent_start hook
+  // (not --append-system-prompt, which causes hangs in -p mode with extensions).
   const piArgs: string[] = [
     "pi",
     "-e", sq(agentSideExtensionPath),
-    "--append-system-prompt", sq(agentDef.filePath),
   ];
 
   if (agentDef.model) {
@@ -235,6 +236,7 @@ export async function launchTeam(
       workingDir,
       agentSideExtensionPath,
       agentsDirs,
+      agentSystemPrompt: agentDef.systemPrompt,
     };
 
     const configPath = await writeAgentConfigFile(baseDir, teamId, agentDef.name, agentConfig);
@@ -310,6 +312,7 @@ export async function spawnWorker(
     workingDir: team.workingDir,
     agentSideExtensionPath,
     agentsDirs: [],
+    agentSystemPrompt: workerDef.systemPrompt,
   };
 
   const baseDir = path.dirname(team.queuePath);

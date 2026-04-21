@@ -16,12 +16,13 @@
  * looking at in a tmux window.
  */
 
+import { readFileSync } from "node:fs";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 
 import { discoverAgentsFromDirs } from "./agent-config.js";
 import { buildWorkerCommand, writeAgentConfigFile, writeAgentLaunchScript } from "./launcher.js";
-import { createWindow } from "../../lib/tmux.js";
+import { capturePane, createWindow, listWindows } from "../../lib/tmux.js";
 import {
   addTask,
   closeTask,
@@ -31,10 +32,11 @@ import {
   getTaskById,
   getTasksByStatus,
   readQueue,
+  recoverTask,
   rejectTask,
   writeQueue,
 } from "../../lib/task-queue.js";
-import type { TaskQueue } from "../../lib/types.js";
+import type { ExecContext, TaskQueue } from "../../lib/types.js";
 import {
   AGENT_CONFIG_ENV_VAR,
   type AgentSideConfig,
@@ -64,9 +66,7 @@ function loadConfig(): AgentSideConfig | null {
   // File path: read from disk
   if (configRef.endsWith(".json")) {
     try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const fs = require("node:fs") as typeof import("node:fs");
-      const raw = fs.readFileSync(configRef, "utf-8");
+      const raw = readFileSync(configRef, "utf-8");
       return JSON.parse(raw) as AgentSideConfig;
     } catch {
       return null;
@@ -165,20 +165,32 @@ export default function agentSideExtension(pi: ExtensionAPI): void {
     );
   });
 
-  // Inject team context into every agent turn
-  pi.on("before_agent_start", async () => {
+  // Inject team context (and agent system prompt) into every agent turn.
+  // We inject via before_agent_start instead of --append-system-prompt
+  // because that flag combined with extensions causes pi to hang in -p mode.
+  pi.on("before_agent_start", async (event) => {
     const queueResult = await readQueue(queuePath);
     const summary = queueResult.ok ? getQueueSummary(queueResult.value) : "(queue unavailable)";
 
+    const contextParts = [
+      `You are agent "${agentName}" in a multi-agent team.`,
+      `Queue file: ${queuePath}`,
+      "",
+      summary,
+    ];
+
+    // Append the agent's system prompt to the system prompt directly
+    // instead of using --append-system-prompt CLI flag.
+    let systemPrompt = event.systemPrompt ?? "";
+    if (config.agentSystemPrompt) {
+      systemPrompt += "\n\n" + config.agentSystemPrompt;
+    }
+
     return {
+      systemPrompt,
       message: {
         customType: "team-context",
-        content: [
-          `You are agent "${agentName}" in a multi-agent team.`,
-          `Queue file: ${queuePath}`,
-          "",
-          summary,
-        ].join("\n"),
+        content: contextParts.join("\n"),
         display: false,
       },
     };
@@ -303,6 +315,7 @@ export default function agentSideExtension(pi: ExtensionAPI): void {
           workingDir: config.workingDir,
           agentSideExtensionPath: config.agentSideExtensionPath,
           agentsDirs: config.agentsDirs,
+          agentSystemPrompt: workerDef.systemPrompt,
         };
 
         const pathMod = await import("node:path");
@@ -344,46 +357,171 @@ export default function agentSideExtension(pi: ExtensionAPI): void {
       },
     });
 
+    // Capture config fields for closures (avoids null-check issues)
+    const tmuxSession = config.tmuxSession;
+    const workingDir = config.workingDir;
+
+    /**
+     * Helper: build an ExecContext from pi.exec for tmux operations.
+     */
+    function tmuxExecCtx(): ExecContext {
+      return {
+        exec: (cmd: string, args: string[], opts?: { timeout?: number }) => pi.exec(cmd, args, opts),
+        cwd: workingDir,
+      };
+    }
+
+    /**
+     * Helper: check if a worker's tmux window still exists.
+     */
+    async function isWorkerWindowAlive(workerName: string): Promise<boolean> {
+      const windowsResult = await listWindows(tmuxExecCtx(), tmuxSession);
+      if (!windowsResult.ok) return false;
+      return windowsResult.value.some((w) => w.name === workerName);
+    }
+
+    /**
+     * Helper: recover any active tasks whose worker windows have died.
+     * Returns the number of tasks recovered.
+     */
+    async function recoverDeadWorkers(queue: TaskQueue): Promise<number> {
+      const activeTasks = getTasksByStatus(queue, "active");
+      let recovered = 0;
+      for (const task of activeTasks) {
+        if (!task.assignedTo) continue;
+        const alive = await isWorkerWindowAlive(task.assignedTo);
+        if (!alive) {
+          recoverTask(queue, task.id, `Worker '${task.assignedTo}' exited without completing. Window no longer exists.`, agentName);
+          recovered++;
+        }
+      }
+      return recovered;
+    }
+
     pi.registerTool({
       name: "monitor_tasks",
       label: "Monitor Tasks",
-      description: "Wait for task queue changes (completions, rejections, new tasks). Times out after timeoutSeconds (default 120) and returns the current state. Call again to keep monitoring.",
+      description: "Wait for task queue changes. Also checks worker health each cycle — if a worker's tmux window has died, its task is automatically recovered and requeued. Times out after timeoutSeconds (default 120). Call again to keep monitoring.",
       parameters: Type.Object({
         timeoutSeconds: Type.Optional(Type.Number({ description: "Max seconds to wait. Default 120." })),
       }),
       async execute(_id, params, signal) {
         const timeoutMs = (params.timeoutSeconds ?? 120) * 1000;
+        const deadline = Date.now() + timeoutMs;
 
         const beforeResult = await readQueue(queuePath);
         if (!beforeResult.ok) throw new Error(beforeResult.error);
 
-        const activeCountBefore = getTasksByStatus(beforeResult.value, "active").length;
-        const reviewCountBefore = getTasksByStatus(beforeResult.value, "review").length;
-        const queuedCountBefore = getTasksByStatus(beforeResult.value, "queued").length;
-        const closedCountBefore = beforeResult.value.closed.length;
+        let lastActiveCount = getTasksByStatus(beforeResult.value, "active").length;
+        let lastReviewCount = getTasksByStatus(beforeResult.value, "review").length;
+        let lastQueuedCount = getTasksByStatus(beforeResult.value, "queued").length;
+        let lastClosedCount = beforeResult.value.closed.length;
 
-        const pollResult = await pollUntil(
-          queuePath,
-          (q) => {
-            const activeNow = getTasksByStatus(q, "active").length;
-            const reviewNow = getTasksByStatus(q, "review").length;
-            const queuedNow = getTasksByStatus(q, "queued").length;
-            const closedNow = q.closed.length;
-            return activeNow !== activeCountBefore
-              || reviewNow !== reviewCountBefore
-              || queuedNow !== queuedCountBefore
-              || closedNow !== closedCountBefore;
-          },
-          signal,
-          timeoutMs,
-        );
+        while (!signal?.aborted && Date.now() < deadline) {
+          // Check for dead workers and recover their tasks
+          const qResult = await readQueue(queuePath);
+          if (qResult.ok) {
+            const recovered = await recoverDeadWorkers(qResult.value);
+            if (recovered > 0) {
+              await writeQueue(queuePath, qResult.value);
+              // Dead workers found — return immediately so orchestrator can re-dispatch
+              return {
+                content: [{ type: "text", text: `Recovered ${recovered} task(s) from dead workers.\n\n${getQueueSummary(qResult.value)}` }],
+                details: {},
+              };
+            }
 
-        // Always return the current queue state — even on timeout/abort
-        const summary = pollResult.ok ? getQueueSummary(pollResult.value) : "(queue read failed)";
+            // Check for queue state changes
+            const activeNow = getTasksByStatus(qResult.value, "active").length;
+            const reviewNow = getTasksByStatus(qResult.value, "review").length;
+            const queuedNow = getTasksByStatus(qResult.value, "queued").length;
+            const closedNow = qResult.value.closed.length;
+
+            if (activeNow !== lastActiveCount || reviewNow !== lastReviewCount
+                || queuedNow !== lastQueuedCount || closedNow !== lastClosedCount) {
+              return {
+                content: [{ type: "text", text: getQueueSummary(qResult.value) }],
+                details: {},
+              };
+            }
+
+            lastActiveCount = activeNow;
+            lastReviewCount = reviewNow;
+            lastQueuedCount = queuedNow;
+            lastClosedCount = closedNow;
+          }
+
+          await new Promise((resolve) => setTimeout(resolve, QUEUE_POLL_INTERVAL_MS));
+        }
+
+        // Timeout — return current state
+        const finalResult = await readQueue(queuePath);
+        const summary = finalResult.ok ? getQueueSummary(finalResult.value) : "(queue read failed)";
         return {
-          content: [{ type: "text", text: summary }],
+          content: [{ type: "text", text: `Monitor timed out after ${(timeoutMs / 1000)}s. Current state:\n${summary}` }],
           details: {},
         };
+      },
+    });
+
+    pi.registerTool({
+      name: "check_workers",
+      label: "Check Workers",
+      description: "Check the health of all active workers. Shows whether each worker's tmux window is alive and captures the last few lines of output. Automatically recovers tasks from dead workers.",
+      parameters: Type.Object({}),
+      async execute() {
+        const qResult = await readQueue(queuePath);
+        if (!qResult.ok) throw new Error(qResult.error);
+        const queue = qResult.value;
+
+        const activeTasks = getTasksByStatus(queue, "active");
+        if (activeTasks.length === 0) {
+          return { content: [{ type: "text", text: "No active tasks." }], details: {} };
+        }
+
+        const ctx = tmuxExecCtx();
+        const lines: string[] = [`Active workers (${activeTasks.length}):\n`];
+        let recovered = 0;
+
+        for (const task of activeTasks) {
+          const workerName = task.assignedTo ?? "(unknown)";
+          const alive = task.assignedTo ? await isWorkerWindowAlive(task.assignedTo) : false;
+
+          if (!alive) {
+            lines.push(`  ✗ ${workerName} — DEAD (window gone)`);
+            lines.push(`    Task: ${task.title} (${task.id})`);
+            if (task.assignedTo) {
+              recoverTask(queue, task.id, `Worker '${task.assignedTo}' exited without completing.`, agentName);
+              recovered++;
+              lines.push(`    → Recovered and requeued`);
+            }
+          } else {
+            lines.push(`  ✓ ${workerName} — ALIVE`);
+            lines.push(`    Task: ${task.title} (${task.id})`);
+
+            // Capture last few lines of worker output
+            const paneResult = await capturePane(ctx, config.tmuxSession, task.assignedTo!);
+            if (paneResult.ok) {
+              const outputLines = paneResult.value.split("\n").filter((l) => l.trim()).slice(-5);
+              if (outputLines.length > 0) {
+                lines.push(`    Recent output:`);
+                for (const ol of outputLines) {
+                  lines.push(`      ${ol.slice(0, 120)}`);
+                }
+              } else {
+                lines.push(`    (no recent output)`);
+              }
+            }
+          }
+          lines.push("");
+        }
+
+        if (recovered > 0) {
+          await writeQueue(queuePath, queue);
+          lines.push(`Recovered ${recovered} task(s) from dead workers. They are requeued at the top.`);
+        }
+
+        return { content: [{ type: "text", text: lines.join("\n") }], details: {} };
       },
     });
   }

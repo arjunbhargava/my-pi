@@ -256,6 +256,38 @@ export function rejectTask(
   return { ok: true, value: task };
 }
 
+/**
+ * Recover a task whose worker died or hung.
+ * Moves an "active" task back to "queued" at the top of the queue
+ * with a note about why it was recovered. Does NOT increment attempts
+ * since the work was never completed.
+ */
+export function recoverTask(
+  queue: TaskQueue,
+  taskId: string,
+  reason: string,
+  recoveredBy: string,
+): Result<Task> {
+  const taskIndex = queue.tasks.findIndex((t) => t.id === taskId);
+  if (taskIndex === -1) return { ok: false, error: `Task '${taskId}' not found` };
+
+  const task = queue.tasks[taskIndex];
+  if (task.status !== "active") {
+    return { ok: false, error: `Task '${taskId}' is '${task.status}', expected 'active'` };
+  }
+
+  task.status = "queued";
+  task.feedback = reason;
+  task.assignedTo = undefined;
+  task.updatedAt = Date.now();
+
+  // Move to top of queue
+  queue.tasks.splice(taskIndex, 1);
+  queue.tasks.unshift(task);
+  appendLog(queue, recoveredBy, `Recovered '${task.title}': ${reason.slice(0, 80)}`);
+  return { ok: true, value: task };
+}
+
 // ---------------------------------------------------------------------------
 // Query helpers (for filtered reads — token-efficient)
 // ---------------------------------------------------------------------------

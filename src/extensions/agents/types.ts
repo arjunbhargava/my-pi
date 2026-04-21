@@ -144,6 +144,8 @@ export interface AgentSideConfig {
   agentSideExtensionPath: string;
   /** Directories to search for agent definitions, lowest priority first. */
   agentsDirs: string[];
+  /** The agent's system prompt content (from the .md file body). Injected via before_agent_start. */
+  agentSystemPrompt?: string;
 }
 
 /** Environment variable name for the agent-side config JSON. */

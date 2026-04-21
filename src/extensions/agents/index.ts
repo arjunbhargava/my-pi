@@ -10,6 +10,7 @@
  * `@mariozechner/pi-coding-agent`.
  */
 
+import { realpathSync } from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
@@ -23,8 +24,15 @@ import type { TeamSession } from "./types.js";
 // ---------------------------------------------------------------------------
 
 export default function agentExtension(pi: ExtensionAPI): void {
-  // Resolve paths relative to this extension's location
-  const extensionDir = path.dirname(new URL(import.meta.url).pathname);
+  // Resolve to the real filesystem path (not a worktree or symlink)
+  // so that spawned agents reference stable paths that survive worktree cleanup.
+  const rawExtensionDir = path.dirname(new URL(import.meta.url).pathname);
+  let extensionDir: string;
+  try {
+    extensionDir = realpathSync(rawExtensionDir);
+  } catch {
+    extensionDir = rawExtensionDir;
+  }
   const packageRoot = path.resolve(extensionDir, "..", "..", "..");
   const packageAgentsDir = path.join(packageRoot, "agents");
   const agentSideExtensionPath = path.join(extensionDir, "agent-side.ts");

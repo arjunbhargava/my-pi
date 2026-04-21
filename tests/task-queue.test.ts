@@ -22,6 +22,7 @@ import {
   getQueueSummary,
   getTasksByStatus,
   readQueue,
+  recoverTask,
   rejectTask,
   writeQueue,
 } from "../src/lib/task-queue.js";
@@ -224,6 +225,34 @@ test("getQueueSummary produces readable output", async () => {
   assert.ok(summary.includes("Active: 1"));
   assert.ok(summary.includes("Implement JWT"));
   assert.ok(summary.includes("worker-1"));
+});
+
+test("recoverTask moves active task back to queued without incrementing attempts", async () => {
+  const q = createQueue("t", "g");
+  const task = addTask(q, "Fragile task", "desc", "orch");
+  dispatchTask(q, task.id, "worker-1", "orch");
+
+  assert.equal(task.attempts, 1);
+  assert.equal(task.status, "active");
+
+  const result = recoverTask(q, task.id, "Worker window died", "orchestrator");
+  assert.ok(result.ok);
+  if (!result.ok) return;
+
+  // Should be back at top of queue, same attempt count
+  assert.equal(q.tasks[0].id, task.id);
+  assert.equal(q.tasks[0].status, "queued");
+  assert.equal(q.tasks[0].attempts, 1, "attempts should NOT increment on recovery");
+  assert.equal(q.tasks[0].feedback, "Worker window died");
+  assert.equal(q.tasks[0].assignedTo, undefined);
+});
+
+test("recoverTask rejects non-active task", async () => {
+  const q = createQueue("t", "g");
+  const task = addTask(q, "Not active", "desc", "orch");
+
+  const result = recoverTask(q, task.id, "reason", "orch");
+  assert.ok(!result.ok);
 });
 
 test("log is capped at limit", async () => {
