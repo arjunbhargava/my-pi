@@ -48,7 +48,7 @@ export async function createSession(
   name: string,
   opts?: { windowName?: string; cwd?: string },
 ): Promise<Result<void>> {
-  const args = ["new-session", "-d", "-s", name];
+  const args = ["new-session", "-d", "-s", name, "-x", "200", "-y", "50"];
   if (opts?.windowName) args.push("-n", opts.windowName);
   if (opts?.cwd) args.push("-c", opts.cwd);
 

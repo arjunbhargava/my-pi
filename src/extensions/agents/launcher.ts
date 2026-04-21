@@ -84,56 +84,89 @@ export async function writeAgentConfigFile(
 // ---------------------------------------------------------------------------
 
 /**
- * Build the shell command to launch a pi agent process.
+ * Write a launcher shell script for an agent and return its path.
  *
- * The agent config is referenced by file path (not inline JSON) to
- * avoid shell escaping issues. Workers get `; exec bash` appended
- * so the tmux window stays open on failure for debugging.
+ * We use a script file instead of inline `bash -c` to avoid shell
+ * escaping hell with nested quotes in tmux commands. The script:
+ *   1. Exports the config env var
+ *   2. Runs pi with the right flags
+ *   3. For workers: keeps the window open on exit for debugging
  */
-export function buildAgentCommand(
+export async function writeAgentLaunchScript(
+  baseDir: string,
+  teamId: string,
+  agentName: string,
   agentDef: AgentDefinition,
   configPath: string,
   agentSideExtensionPath: string,
-  opts?: { taskPrompt?: string },
-): string {
-  const parts: string[] = [
+  taskPrompt?: string,
+): Promise<string> {
+  const configDir = path.join(baseDir, CONFIG_DIR_NAME);
+  await mkdir(configDir, { recursive: true });
+  const scriptPath = path.join(configDir, `${teamId}-${agentName}.sh`);
+
+  // Log file for diagnostics — lives next to the script
+  const logPath = scriptPath.replace(/\.sh$/, ".log");
+
+  const lines: string[] = [
+    "#!/usr/bin/env bash",
+    `LOGFILE=${sq(logPath)}`,
+    `echo "[$(date)] Agent ${agentName} starting" >> "$LOGFILE"`,
+    `export ${AGENT_CONFIG_ENV_VAR}=${sq(configPath)}`,
+    `echo "[$(date)] Config: $${AGENT_CONFIG_ENV_VAR}" >> "$LOGFILE"`,
+    "",
+  ];
+
+  const piArgs: string[] = [
     "pi",
     "-e", sq(agentSideExtensionPath),
     "--append-system-prompt", sq(agentDef.filePath),
   ];
 
   if (agentDef.model) {
-    parts.push("--model", agentDef.model);
+    piArgs.push("--model", agentDef.model);
   }
-
   if (agentDef.tools && agentDef.tools.length > 0) {
-    parts.push("--tools", agentDef.tools.join(","));
+    piArgs.push("--tools", agentDef.tools.join(","));
+  }
+  if (agentDef.role === "worker" && taskPrompt) {
+    piArgs.push("-p", sq(taskPrompt));
   }
 
-  if (agentDef.role === "worker" && opts?.taskPrompt) {
-    parts.push("-p", sq(opts.taskPrompt));
-  }
+  const piCommand = piArgs.join(" ");
+  lines.push(`echo "[$(date)] Running: ${piCommand.replace(/'/g, "")}" >> "$LOGFILE"`);
+  lines.push(piCommand);
+  lines.push(`EXIT_CODE=$?`);
+  lines.push(`echo "[$(date)] pi exited with code $EXIT_CODE" >> "$LOGFILE"`);
 
-  const piCommand = parts.join(" ");
-  const envPrefix = `export ${AGENT_CONFIG_ENV_VAR}=${sq(configPath)}`;
-
-  // Workers: keep window open after exit so errors are visible
+  // Workers: keep window open so errors are visible
   if (agentDef.role === "worker") {
-    return `bash -c ${sq(`${envPrefix}; ${piCommand}; echo ""; echo "[Worker exited. Press Enter to close.]"; read`)}`;
+    lines.push("");
+    lines.push("echo \"\"");
+    lines.push(`echo "[Worker exited with code $EXIT_CODE. Press Enter to close.]"`);
+    lines.push(`echo "[Log: $LOGFILE]"`);
+    lines.push("read");
   }
-  return `bash -c ${sq(`${envPrefix}; ${piCommand}`)}`;
+
+  await writeFile(scriptPath, lines.join("\n") + "\n", { mode: 0o755 });
+  return scriptPath;
+}
+
+/**
+ * Build the tmux command string for an agent.
+ * Returns a simple `bash /path/to/script.sh` invocation.
+ */
+export function buildAgentCommand(scriptPath: string): string {
+  return `bash ${sq(scriptPath)}`;
 }
 
 /**
  * Build a command to launch a worker for a specific task.
  */
 export function buildWorkerCommand(
-  agentDef: AgentDefinition,
-  configPath: string,
-  agentSideExtensionPath: string,
-  taskPrompt: string,
+  scriptPath: string,
 ): string {
-  return buildAgentCommand(agentDef, configPath, agentSideExtensionPath, { taskPrompt });
+  return buildAgentCommand(scriptPath);
 }
 
 // ---------------------------------------------------------------------------
@@ -205,7 +238,10 @@ export async function launchTeam(
     };
 
     const configPath = await writeAgentConfigFile(baseDir, teamId, agentDef.name, agentConfig);
-    const command = buildAgentCommand(agentDef, configPath, agentSideExtensionPath);
+    const scriptPath = await writeAgentLaunchScript(
+      baseDir, teamId, agentDef.name, agentDef, configPath, agentSideExtensionPath,
+    );
+    const command = buildAgentCommand(scriptPath);
 
     const windowResult = await createWindow(ctx, tmuxSession, agentDef.name, {
       command,
@@ -278,7 +314,10 @@ export async function spawnWorker(
 
   const baseDir = path.dirname(team.queuePath);
   const configPath = await writeAgentConfigFile(baseDir, team.teamId, workerName, agentConfig);
-  const command = buildWorkerCommand(workerDef, configPath, agentSideExtensionPath, taskPrompt);
+  const scriptPath = await writeAgentLaunchScript(
+    baseDir, team.teamId, workerName, workerDef, configPath, agentSideExtensionPath, taskPrompt,
+  );
+  const command = buildWorkerCommand(scriptPath);
 
   const windowResult = await createWindow(ctx, team.tmuxSession, workerName, {
     command,

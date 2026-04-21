@@ -20,7 +20,8 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 
 import { discoverAgentsFromDirs } from "./agent-config.js";
-import { buildWorkerCommand } from "./launcher.js";
+import { buildWorkerCommand, writeAgentConfigFile, writeAgentLaunchScript } from "./launcher.js";
+import { createWindow } from "../../lib/tmux.js";
 import {
   addTask,
   closeTask,
@@ -289,7 +290,7 @@ export default function agentSideExtension(pi: ExtensionAPI): void {
         const workerDef = agents.find((a) => a.role === "worker" && a.name === workerType);
         if (!workerDef) throw new Error(`Worker type '${workerType}' not found. Available: ${agents.filter(a => a.role === "worker").map(a => a.name).join(", ")}`);
 
-        // Build the worker config and command
+        // Build the worker config, launch script, and command
         const workerConfig: AgentSideConfig = {
           teamId: config.teamId,
           goal: config.goal,
@@ -304,36 +305,33 @@ export default function agentSideExtension(pi: ExtensionAPI): void {
           agentsDirs: config.agentsDirs,
         };
 
-        // Write config to file (avoids shell escaping issues)
-        const { mkdir: mkdirAsync, writeFile: writeFileAsync } = await import("node:fs/promises");
         const pathMod = await import("node:path");
-        const configDir = pathMod.join(pathMod.dirname(queuePath), ".team-configs");
-        await mkdirAsync(configDir, { recursive: true });
-        const configPath = pathMod.join(configDir, `${config.teamId}-${workerName}.json`);
-        await writeFileAsync(configPath, JSON.stringify(workerConfig, null, 2) + "\n", "utf-8");
+        const baseDir = pathMod.dirname(queuePath);
+        const configPath = await writeAgentConfigFile(baseDir, config.teamId, workerName, workerConfig);
 
         const taskPrompt = [
           `You are ${workerName}. Your assigned task ID is: ${params.taskId}.`,
           "Use read_queue to get your task details, then do the work, then use complete_task when done.",
         ].join(" ");
 
-        const command = buildWorkerCommand(
-          workerDef,
-          configPath,
-          config.agentSideExtensionPath,
-          taskPrompt,
+        const scriptPath = await writeAgentLaunchScript(
+          baseDir, config.teamId, workerName, workerDef,
+          configPath, config.agentSideExtensionPath, taskPrompt,
         );
+        const command = buildWorkerCommand(scriptPath);
 
-        // Spawn tmux window directly via pi.exec
-        const tmuxResult = await pi.exec("tmux", [
-          "new-window", "-t", config.tmuxSession,
-          "-n", workerName,
-          "-c", config.workingDir,
+        // Use the same createWindow path as permanent agents
+        const execCtx = {
+          exec: (cmd: string, args: string[], opts?: { timeout?: number }) => pi.exec(cmd, args, opts),
+          cwd: config.workingDir,
+        };
+        const windowResult = await createWindow(execCtx, config.tmuxSession, workerName, {
           command,
-        ]);
+          cwd: config.workingDir,
+        });
 
-        if (tmuxResult.code !== 0) {
-          throw new Error(`Failed to spawn worker tmux window: ${tmuxResult.stderr.trim()}`);
+        if (!windowResult.ok) {
+          throw new Error(`Failed to spawn worker tmux window: ${windowResult.error}`);
         }
 
         return {
