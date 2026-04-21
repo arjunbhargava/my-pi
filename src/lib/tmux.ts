@@ -100,6 +100,19 @@ export async function killSession(
   return { ok: true, value: undefined };
 }
 
+/** Kill a single window within a tmux session. */
+export async function killWindow(
+  ctx: ExecContext,
+  session: string,
+  window: string,
+): Promise<Result<void>> {
+  const result = await execTmux(ctx, ["kill-window", "-t", `${session}:${window}`]);
+  if (result.code !== 0) {
+    return { ok: false, error: `Failed to kill window '${window}': ${result.stderr.trim()}` };
+  }
+  return { ok: true, value: undefined };
+}
+
 // ---------------------------------------------------------------------------
 // Window inspection
 // ---------------------------------------------------------------------------

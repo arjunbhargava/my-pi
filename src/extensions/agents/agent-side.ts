@@ -22,7 +22,7 @@ import { Type } from "@sinclair/typebox";
 
 import { discoverAgentsFromDirs } from "./agent-config.js";
 import { buildWorkerCommand, writeAgentConfigFile, writeAgentLaunchScript } from "./launcher.js";
-import { capturePane, createWindow, listWindows } from "../../lib/tmux.js";
+import { capturePane, createWindow, killWindow, listWindows, sendKeys } from "../../lib/tmux.js";
 import {
   addTask,
   closeTask,
@@ -276,6 +276,25 @@ export default function agentSideExtension(pi: ExtensionAPI): void {
   // -- Orchestrator-only tools -----------------------------------------------
 
   if (canDispatch) {
+    // Capture config fields for closures (avoids null-check issues)
+    const tmuxSession = config.tmuxSession;
+    const workingDir = config.workingDir;
+
+    /** Helper: build an ExecContext from pi.exec for tmux operations. */
+    function tmuxExecCtx(): ExecContext {
+      return {
+        exec: (cmd: string, args: string[], opts?: { timeout?: number }) => pi.exec(cmd, args, opts),
+        cwd: workingDir,
+      };
+    }
+
+    /** Helper: check if a worker's tmux window still exists. */
+    async function isWorkerWindowAlive(workerName: string): Promise<boolean> {
+      const windowsResult = await listWindows(tmuxExecCtx(), tmuxSession);
+      if (!windowsResult.ok) return false;
+      return windowsResult.value.some((w) => w.name === workerName);
+    }
+
     pi.registerTool({
       name: "dispatch_task",
       label: "Dispatch Task",
@@ -322,63 +341,42 @@ export default function agentSideExtension(pi: ExtensionAPI): void {
         const baseDir = pathMod.dirname(queuePath);
         const configPath = await writeAgentConfigFile(baseDir, config.teamId, workerName, workerConfig);
 
-        const taskPrompt = [
-          `You are ${workerName}. Your assigned task ID is: ${params.taskId}.`,
-          "Use read_queue to get your task details, then do the work, then use complete_task when done.",
-        ].join(" ");
-
         const scriptPath = await writeAgentLaunchScript(
           baseDir, config.teamId, workerName, workerDef,
-          configPath, config.agentSideExtensionPath, taskPrompt,
+          configPath, config.agentSideExtensionPath,
         );
         const command = buildWorkerCommand(scriptPath);
 
-        // Use the same createWindow path as permanent agents
-        const execCtx = {
-          exec: (cmd: string, args: string[], opts?: { timeout?: number }) => pi.exec(cmd, args, opts),
-          cwd: config.workingDir,
-        };
-        const windowResult = await createWindow(execCtx, config.tmuxSession, workerName, {
+        // Spawn as interactive pi session
+        const ctx = tmuxExecCtx();
+        const windowResult = await createWindow(ctx, tmuxSession, workerName, {
           command,
-          cwd: config.workingDir,
+          cwd: workingDir,
         });
 
         if (!windowResult.ok) {
           throw new Error(`Failed to spawn worker tmux window: ${windowResult.error}`);
         }
 
+        // Inject the task prompt after pi has time to start
+        const taskPrompt = [
+          `You are ${workerName}. Your assigned task ID is: ${params.taskId}.`,
+          "Use read_queue to get your task details, then do the work, then use complete_task when done.",
+        ].join(" ");
+
+        setTimeout(async () => {
+          await sendKeys(ctx, tmuxSession, workerName, taskPrompt);
+        }, 5000);
+
         return {
           content: [{
             type: "text",
-            text: `Dispatched '${result.value.title}' to ${workerName} (${workerType}). Worker is running in tmux window '${workerName}'.`,
+            text: `Dispatched '${result.value.title}' to ${workerName} (${workerType}). Interactive worker running in tmux window '${workerName}'.`,
           }],
           details: {},
         };
       },
     });
-
-    // Capture config fields for closures (avoids null-check issues)
-    const tmuxSession = config.tmuxSession;
-    const workingDir = config.workingDir;
-
-    /**
-     * Helper: build an ExecContext from pi.exec for tmux operations.
-     */
-    function tmuxExecCtx(): ExecContext {
-      return {
-        exec: (cmd: string, args: string[], opts?: { timeout?: number }) => pi.exec(cmd, args, opts),
-        cwd: workingDir,
-      };
-    }
-
-    /**
-     * Helper: check if a worker's tmux window still exists.
-     */
-    async function isWorkerWindowAlive(workerName: string): Promise<boolean> {
-      const windowsResult = await listWindows(tmuxExecCtx(), tmuxSession);
-      if (!windowsResult.ok) return false;
-      return windowsResult.value.some((w) => w.name === workerName);
-    }
 
     /**
      * Helper: recover any active tasks whose worker windows have died.
@@ -529,6 +527,15 @@ export default function agentSideExtension(pi: ExtensionAPI): void {
   // -- Evaluator-only tools --------------------------------------------------
 
   if (canClose) {
+    /** Helper: kill a worker's tmux window (best-effort). */
+    async function killWorkerWindow(workerName: string): Promise<void> {
+      const ctx: ExecContext = {
+        exec: (cmd: string, args: string[], opts?: { timeout?: number }) => pi.exec(cmd, args, opts),
+        cwd: config!.workingDir,
+      };
+      await killWindow(ctx, config!.tmuxSession, workerName);
+    }
+
     pi.registerTool({
       name: "wait_for_reviews",
       label: "Wait for Reviews",
@@ -574,7 +581,7 @@ export default function agentSideExtension(pi: ExtensionAPI): void {
     pi.registerTool({
       name: "close_task",
       label: "Close Task",
-      description: "Approve and close a reviewed task. Only the evaluator can close tasks.",
+      description: "Approve and close a reviewed task. Kills the worker's tmux window. Only the evaluator can close tasks.",
       parameters: Type.Object({
         taskId: Type.String({ description: "ID of the reviewed task to close" }),
       }),
@@ -582,12 +589,19 @@ export default function agentSideExtension(pi: ExtensionAPI): void {
         const qResult = await readQueue(queuePath);
         if (!qResult.ok) throw new Error(qResult.error);
         const queue = qResult.value;
+
+        const task = getTaskById(queue, params.taskId);
+        const workerName = task?.assignedTo;
+
         const result = closeTask(queue, params.taskId, agentName);
         if (!result.ok) throw new Error(result.error);
         const writeResult = await writeQueue(queuePath, queue);
         if (!writeResult.ok) throw new Error(`Error writing queue: ${writeResult.error}`);
+
+        if (workerName) await killWorkerWindow(workerName);
+
         return {
-          content: [{ type: "text", text: `Closed '${result.value.title}' after ${result.value.attempts} attempt(s).` }],
+          content: [{ type: "text", text: `Closed '${result.value.title}' after ${result.value.attempts} attempt(s). Worker window killed.` }],
           details: {},
         };
       },
@@ -596,7 +610,7 @@ export default function agentSideExtension(pi: ExtensionAPI): void {
     pi.registerTool({
       name: "reject_task",
       label: "Reject Task",
-      description: "Reject a reviewed task with feedback. Requeues the task at the top of the queue for another attempt.",
+      description: "Reject a reviewed task with feedback. Kills the worker's tmux window and requeues the task for another attempt.",
       parameters: Type.Object({
         taskId: Type.String({ description: "ID of the reviewed task to reject" }),
         feedback: Type.String({ description: "Specific, actionable feedback for the next worker attempt" }),
@@ -605,14 +619,21 @@ export default function agentSideExtension(pi: ExtensionAPI): void {
         const qResult = await readQueue(queuePath);
         if (!qResult.ok) throw new Error(qResult.error);
         const queue = qResult.value;
+
+        const task = getTaskById(queue, params.taskId);
+        const workerName = task?.assignedTo;
+
         const result = rejectTask(queue, params.taskId, params.feedback, agentName);
         if (!result.ok) throw new Error(result.error);
         const writeResult = await writeQueue(queuePath, queue);
         if (!writeResult.ok) throw new Error(`Error writing queue: ${writeResult.error}`);
+
+        if (workerName) await killWorkerWindow(workerName);
+
         return {
           content: [{
             type: "text",
-            text: `Rejected '${result.value.title}'. Requeued at top with feedback. (attempt ${result.value.attempts})`,
+            text: `Rejected '${result.value.title}'. Worker window killed. Requeued at top with feedback. (attempt ${result.value.attempts})`,
           }],
           details: {},
         };

@@ -99,7 +99,6 @@ export async function writeAgentLaunchScript(
   agentDef: AgentDefinition,
   configPath: string,
   agentSideExtensionPath: string,
-  taskPrompt?: string,
 ): Promise<string> {
   const configDir = path.join(baseDir, CONFIG_DIR_NAME);
   await mkdir(configDir, { recursive: true });
@@ -130,24 +129,12 @@ export async function writeAgentLaunchScript(
   if (agentDef.tools && agentDef.tools.length > 0) {
     piArgs.push("--tools", agentDef.tools.join(","));
   }
-  if (agentDef.role === "worker" && taskPrompt) {
-    piArgs.push("-p", sq(taskPrompt));
-  }
-
+  // All agents run in interactive mode — no -p flag.
+  // Task prompts are injected via tmux send-keys after pi starts.
   const piCommand = piArgs.join(" ");
   lines.push(`echo "[$(date)] Running: ${piCommand.replace(/'/g, "")}" >> "$LOGFILE"`);
   lines.push(piCommand);
-  lines.push(`EXIT_CODE=$?`);
-  lines.push(`echo "[$(date)] pi exited with code $EXIT_CODE" >> "$LOGFILE"`);
-
-  // Workers: keep window open so errors are visible
-  if (agentDef.role === "worker") {
-    lines.push("");
-    lines.push("echo \"\"");
-    lines.push(`echo "[Worker exited with code $EXIT_CODE. Press Enter to close.]"`);
-    lines.push(`echo "[Log: $LOGFILE]"`);
-    lines.push("read");
-  }
+  lines.push(`echo "[$(date)] pi exited with code $?" >> "$LOGFILE"`);
 
   await writeFile(scriptPath, lines.join("\n") + "\n", { mode: 0o755 });
   return scriptPath;
@@ -289,8 +276,12 @@ export async function launchTeam(
   return { ok: true, value: team };
 }
 
+/** Delay (ms) before injecting a task prompt into a newly spawned worker. */
+const WORKER_PROMPT_DELAY_MS = 5000;
+
 /**
- * Spawn an ephemeral worker in a new tmux window for a specific task.
+ * Spawn a worker as a full interactive pi session in a new tmux window.
+ * The task prompt is injected via sendKeys after pi starts.
  */
 export async function spawnWorker(
   ctx: ExecContext,
@@ -318,7 +309,7 @@ export async function spawnWorker(
   const baseDir = path.dirname(team.queuePath);
   const configPath = await writeAgentConfigFile(baseDir, team.teamId, workerName, agentConfig);
   const scriptPath = await writeAgentLaunchScript(
-    baseDir, team.teamId, workerName, workerDef, configPath, agentSideExtensionPath, taskPrompt,
+    baseDir, team.teamId, workerName, workerDef, configPath, agentSideExtensionPath,
   );
   const command = buildWorkerCommand(scriptPath);
 
@@ -328,6 +319,11 @@ export async function spawnWorker(
   });
 
   if (!windowResult.ok) return windowResult;
+
+  // Inject the task prompt after pi has time to start
+  setTimeout(async () => {
+    await sendKeys(ctx, team.tmuxSession, workerName, taskPrompt);
+  }, WORKER_PROMPT_DELAY_MS);
 
   return {
     ok: true,
