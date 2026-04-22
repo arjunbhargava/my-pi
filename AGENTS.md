@@ -9,7 +9,7 @@ and (future) multi-agent orchestration.
 - `src/lib/types.ts` — Shared type definitions used across all modules (git context, result types, git data shapes).
 - `src/lib/git.ts` — All git command wrappers. The only module that executes git commands.
 - `src/extensions/worktree/` — Pi extension for worktree + checkpoint workflow.
-- `src/extensions/worktree/index.ts` — Extension entry point. Only file that imports from `@mariozechner/pi-coding-agent`.
+- `src/extensions/worktree/worktree.ts` — Extension entry point. Only file that imports from `@mariozechner/pi-coding-agent`.
 - `src/extensions/worktree/types.ts` — Extension-specific type definitions. No logic, no imports beyond other type files.
 - `skills/` — Agent skill definitions (SKILL.md files).
 
@@ -66,7 +66,7 @@ All work happens in isolated worktrees — never edit files directly on main.
 ## Commands
 
 - After code changes: verify TypeScript compiles with `npx tsc --noEmit`
-- Test the extension by running `pi -e src/extensions/worktree/index.ts` in a test repo
+- Test the extension by running `pi -e src/extensions/worktree/worktree.ts` in a test repo
 - NEVER commit to the my-pi repo unless asked
 - NEVER run `npm publish`
 

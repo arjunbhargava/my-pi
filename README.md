@@ -42,7 +42,7 @@ This uses the `pi.extensions` field in my-pi's `package.json` to discover the ex
 Load the extension directly for a single session:
 
 ```bash
-pi -e /path/to/my-pi/src/extensions/worktree/index.ts
+pi -e /path/to/my-pi/src/extensions/worktree/worktree.ts
 ```
 
 ### What does NOT work

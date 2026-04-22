@@ -1,0 +1,6 @@
+{
+  "name": "pi-worktree",
+  "pi": {
+    "extensions": ["./worktree.ts"]
+  }
+}
