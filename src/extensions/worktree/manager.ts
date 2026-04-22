@@ -15,6 +15,7 @@ import {
   deleteBranch,
   getMainBranch,
   getRepositoryRoot,
+  mergeBranch,
   worktreeAdd,
   worktreeList,
   worktreePrune,
@@ -151,6 +152,26 @@ export async function removeTask(ctx: GitContext, task: TaskState): Promise<Resu
 export function getActiveTask(state: HarnessState): TaskState | null {
   if (!state.activeTaskId) return null;
   return state.tasks.get(state.activeTaskId) ?? null;
+}
+
+/**
+ * Update a task branch by merging the latest main into it.
+ *
+ * If the task worktree has uncommitted changes, they must be
+ * checkpointed by the caller before calling this function.
+ * This function only performs the merge.
+ *
+ * @param mainCtx - Git context pointing at the **main** worktree.
+ * @param taskCtx - Git context pointing at the **task** worktree.
+ */
+export async function updateTaskFromMain(
+  mainCtx: GitContext,
+  taskCtx: GitContext,
+): Promise<Result<string>> {
+  const mainBranch = await getMainBranch(mainCtx);
+  if (!mainBranch.ok) return mainBranch;
+
+  return mergeBranch(taskCtx, mainBranch.value);
 }
 
 /**

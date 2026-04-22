@@ -6,10 +6,11 @@
  * `@mariozechner/pi-coding-agent`.
  */
 
-import { getMainBranch, logOneline, pushBranch } from "../../lib/git.js";
+import { getMainBranch, hasUncommittedChanges, logOneline, pushBranch } from "../../lib/git.js";
 import { acceptTask, getTaskDiff, rejectTask } from "./accept-reject.js";
+import { createCheckpoint } from "./checkpoint.js";
 import { createPullRequest } from "./pull-request.js";
-import { createTask, getActiveTask, slugify } from "./manager.js";
+import { createTask, getActiveTask, slugify, updateTaskFromMain } from "./manager.js";
 import type { ExtensionState, NotifyLevel } from "./extension-state.js";
 
 // ---------------------------------------------------------------------------
@@ -251,6 +252,50 @@ export function registerWorktreeCommands(es: ExtensionState, register: CommandRe
         es.autoAccept
           ? "Auto-accept ON — tasks will be squash-merged after each interaction."
           : "Auto-accept OFF — use /wt-accept to merge manually.",
+        "info",
+      );
+    },
+  });
+
+  register("wt-update", {
+    description: "Update current task branch by merging latest main into it",
+    handler: async (_args, ctx) => {
+      if (!es.repoRoot) {
+        ctx.ui.notify("Not in a git repository.", "error");
+        return;
+      }
+
+      const activeTask = getActiveTask(es.state);
+      if (!activeTask) {
+        ctx.ui.notify("No active task to update.", "info");
+        return;
+      }
+
+      const taskCtx = es.gitCtx(activeTask.worktreePath);
+
+      // Checkpoint uncommitted changes before merging
+      const dirty = await hasUncommittedChanges(taskCtx);
+      if (dirty.ok && dirty.value) {
+        ctx.ui.notify("Checkpointing uncommitted changes before update...", "info");
+        const cpResult = await createCheckpoint(taskCtx, "pre-update checkpoint");
+        if (!cpResult.ok) {
+          ctx.ui.notify(`Checkpoint failed: ${cpResult.error}`, "error");
+          return;
+        }
+        if (cpResult.value) {
+          activeTask.checkpoints.push(cpResult.value);
+          es.persistState();
+        }
+      }
+
+      const result = await updateTaskFromMain(es.gitCtx(es.repoRoot), taskCtx);
+      if (!result.ok) {
+        ctx.ui.notify(`Update failed: ${result.error}`, "error");
+        return;
+      }
+
+      ctx.ui.notify(
+        `Updated "${activeTask.description}" from main → ${result.value.slice(0, 8)}`,
         "info",
       );
     },

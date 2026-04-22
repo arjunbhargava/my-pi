@@ -305,6 +305,23 @@ export async function mergeSquash(ctx: GitContext, branchName: string): Promise<
   return { ok: true, value: undefined };
 }
 
+/**
+ * Merge a source branch into the currently checked-out branch.
+ *
+ * Uses a standard merge commit. If the branches have not diverged,
+ * git will fast-forward instead. Returns the resulting HEAD SHA.
+ *
+ * @param ctx        - Git context (cwd should be the target worktree).
+ * @param branchName - Branch to merge in (e.g., "main").
+ */
+export async function mergeBranch(ctx: GitContext, branchName: string): Promise<Result<string>> {
+  const result = await execGit(ctx, ["merge", branchName, "--no-edit"]);
+  if (result.code !== 0) {
+    return { ok: false, error: `Merge failed: ${result.stderr.trim()}` };
+  }
+  return getHeadSha(ctx);
+}
+
 // ---------------------------------------------------------------------------
 // Log
 // ---------------------------------------------------------------------------
