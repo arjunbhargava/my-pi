@@ -361,3 +361,45 @@ export async function diffSummary(
   }
   return { ok: true, value: result.stdout.trim() };
 }
+
+/** Status letter returned by `git diff --name-status`. */
+export type DiffStatus = "A" | "M" | "D" | "R" | "C" | "T";
+
+/** A single file entry from `git diff --name-status`. */
+export interface DiffFileEntry {
+  status: DiffStatus;
+  path: string;
+  /** Present only for renames/copies — the destination path. */
+  renamedTo?: string;
+}
+
+/**
+ * Return a per-file status list between two refs.
+ *
+ * Each entry has a status letter (A/M/D/R/C/T) and path(s).
+ * Useful for building human-readable change summaries.
+ */
+export async function diffNameStatus(
+  ctx: GitContext,
+  fromRef: string,
+  toRef: string,
+): Promise<Result<DiffFileEntry[]>> {
+  const result = await execGit(ctx, ["diff", "--name-status", fromRef, toRef]);
+  if (result.code !== 0) {
+    return { ok: false, error: `git diff --name-status failed: ${result.stderr.trim()}` };
+  }
+
+  const entries: DiffFileEntry[] = [];
+  for (const line of result.stdout.trim().split("\n").filter(Boolean)) {
+    const parts = line.split("\t");
+    const statusCode = parts[0].charAt(0) as DiffStatus;
+
+    if (statusCode === "R" || statusCode === "C") {
+      entries.push({ status: statusCode, path: parts[1], renamedTo: parts[2] });
+    } else {
+      entries.push({ status: statusCode, path: parts[1] });
+    }
+  }
+
+  return { ok: true, value: entries };
+}

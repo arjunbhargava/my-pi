@@ -4,6 +4,8 @@
 
 import {
   commit,
+  type DiffFileEntry,
+  diffNameStatus,
   diffSummary,
   getMainBranch,
   mergeSquash,
@@ -17,33 +19,66 @@ import type { TaskState } from "./types.js";
 // Helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Build a squash-merge commit message with the summary as the subject,
- * checkpoint history as bullet points, and each checkpoint's full
- * description preserved in the body for traceability.
- */
-function buildSquashMessage(task: TaskState, summary: string): string {
-  if (task.checkpoints.length === 0) {
-    return summary;
-  }
+/** Map a diff status letter to a human-readable verb. */
+function statusLabel(status: DiffFileEntry["status"]): string {
+  const labels: Record<DiffFileEntry["status"], string> = {
+    A: "add",
+    M: "modify",
+    D: "delete",
+    R: "rename",
+    C: "copy",
+    T: "change type",
+  };
+  return labels[status] ?? status;
+}
 
+/** Format a single diff entry as a human-readable line. */
+function formatDiffEntry(entry: DiffFileEntry): string {
+  if (entry.renamedTo) {
+    return `${statusLabel(entry.status)} ${entry.path} → ${entry.renamedTo}`;
+  }
+  return `${statusLabel(entry.status)} ${entry.path}`;
+}
+
+/**
+ * Build a squash-merge commit message combining a file-level change
+ * summary with the prompts that drove those changes.
+ *
+ * Format:
+ * ```
+ * <summary subject line>
+ *
+ * Changes:
+ * - add src/lib/new-file.ts
+ * - modify src/extensions/worktree/accept-reject.ts
+ *
+ * Prompts:
+ * - add authentication middleware
+ * - fix the login endpoint
+ * ```
+ */
+function buildSquashMessage(
+  task: TaskState,
+  summary: string,
+  fileChanges: DiffFileEntry[],
+): string {
   const sections: string[] = [summary, ""];
 
-  // Bullet list of checkpoint subjects (like GitHub squash-merge format)
-  const bullets = task.checkpoints.map((cp) => {
-    const shortSha = cp.sha.slice(0, 8);
-    const subject = summarizePrompt(cp.description);
-    return `* ${shortSha} — ${subject}`;
-  });
-  sections.push(bullets.join("\n"), "");
-
-  // Full checkpoint details for traceability
-  sections.push("Checkpoints:");
-  for (const cp of task.checkpoints) {
-    const date = new Date(cp.timestamp).toISOString();
-    sections.push(`  ${cp.sha.slice(0, 8)} (${date})`);
-    sections.push(`  ${cp.description.trim()}`);
+  // File-level change summary
+  if (fileChanges.length > 0) {
+    sections.push("Changes:");
+    for (const entry of fileChanges) {
+      sections.push(`- ${formatDiffEntry(entry)}`);
+    }
     sections.push("");
+  }
+
+  // Prompt history
+  if (task.checkpoints.length > 0) {
+    sections.push("Prompts:");
+    for (const cp of task.checkpoints) {
+      sections.push(`- ${summarizePrompt(cp.description)}`);
+    }
   }
 
   return sections.join("\n").trimEnd();
@@ -74,10 +109,14 @@ export async function acceptTask(
   const mainBranch = await getMainBranch(mainCtx);
   if (!mainBranch.ok) return mainBranch;
 
+  // Capture file-level changes before squash-merging
+  const fileChanges = await diffNameStatus(mainCtx, mainBranch.value, task.branchName);
+  const changes = fileChanges.ok ? fileChanges.value : [];
+
   const merge = await mergeSquash(mainCtx, task.branchName);
   if (!merge.ok) return merge;
 
-  const fullMessage = buildSquashMessage(task, summary);
+  const fullMessage = buildSquashMessage(task, summary, changes);
   const commitResult = await commit(mainCtx, fullMessage);
   if (!commitResult.ok) return commitResult;
 
