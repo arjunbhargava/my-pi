@@ -17,6 +17,8 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { getRepositoryRoot } from "../../lib/git.js";
 import type { ExecContext } from "../../lib/types.js";
 import { type AgentCommandState, registerAgentCommands } from "./commands.js";
+import agentSideExtension from "./agent-side.js";
+import { AGENT_CONFIG_ENV_VAR } from "./types.js";
 import type { TeamSession } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -24,6 +26,13 @@ import type { TeamSession } from "./types.js";
 // ---------------------------------------------------------------------------
 
 export default function agentExtension(pi: ExtensionAPI): void {
+  // When running as a spawned team agent, delegate to agent-side setup
+  // (registers team tools instead of control-plane commands)
+  if (process.env[AGENT_CONFIG_ENV_VAR]) {
+    agentSideExtension(pi);
+    return;
+  }
+
   // Resolve to the real filesystem path (not a worktree or symlink)
   // so that spawned agents reference stable paths that survive worktree cleanup.
   const rawExtensionDir = path.dirname(new URL(import.meta.url).pathname);

@@ -1,7 +1,7 @@
 ---
 name: researcher
 description: Runs experiments, collects data, and reports structured results
-model: claude-sonnet-4-5
+model: us.anthropic.claude-sonnet-4-6
 tools: read, bash, edit, write, grep, find
 ---
 

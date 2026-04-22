@@ -306,6 +306,37 @@ export async function mergeSquash(ctx: GitContext, branchName: string): Promise<
 }
 
 /**
+ * List files with merge conflicts after a failed merge attempt.
+ *
+ * Uses the unmerged (U) diff filter to find files with unresolved conflicts.
+ *
+ * @param ctx - Git context.
+ * @returns Array of file paths with unresolved conflicts.
+ */
+export async function getMergeConflicts(ctx: GitContext): Promise<Result<string[]>> {
+  const result = await execGit(ctx, ["diff", "--name-only", "--diff-filter=U"]);
+  if (result.code !== 0) {
+    return { ok: false, error: `Failed to list conflicts: ${result.stderr.trim()}` };
+  }
+  const files = result.stdout.trim().split("\n").filter(Boolean);
+  return { ok: true, value: files };
+}
+
+/**
+ * Reset the working tree and index to HEAD, discarding all changes.
+ * Used to clean up after a failed squash merge with conflicts.
+ *
+ * @param ctx - Git context.
+ */
+export async function resetHard(ctx: GitContext): Promise<Result<void>> {
+  const result = await execGit(ctx, ["reset", "--hard", "HEAD"]);
+  if (result.code !== 0) {
+    return { ok: false, error: `git reset failed: ${result.stderr.trim()}` };
+  }
+  return { ok: true, value: undefined };
+}
+
+/**
  * Merge a source branch into the currently checked-out branch.
  *
  * Uses a standard merge commit. If the branches have not diverged,

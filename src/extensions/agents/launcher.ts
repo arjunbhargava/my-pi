@@ -98,7 +98,6 @@ export async function writeAgentLaunchScript(
   agentName: string,
   agentDef: AgentDefinition,
   configPath: string,
-  agentSideExtensionPath: string,
 ): Promise<string> {
   const configDir = path.join(baseDir, CONFIG_DIR_NAME);
   await mkdir(configDir, { recursive: true });
@@ -120,15 +119,15 @@ export async function writeAgentLaunchScript(
   // (not --append-system-prompt, which causes hangs in -p mode with extensions).
   const piArgs: string[] = [
     "pi",
-    "-e", sq(agentSideExtensionPath),
   ];
 
   if (agentDef.model) {
     piArgs.push("--model", agentDef.model);
   }
-  if (agentDef.tools && agentDef.tools.length > 0) {
-    piArgs.push("--tools", agentDef.tools.join(","));
-  }
+  // Note: agentDef.tools is intentionally NOT passed as --tools.
+  // The --tools flag acts as a whitelist that would filter out
+  // custom tools registered by the agent-side extension.
+  // Tool guidance comes from the agent's system prompt instead.
   // All agents run in interactive mode — no -p flag.
   // Task prompts are injected via tmux send-keys after pi starts.
   const piCommand = piArgs.join(" ");
@@ -178,6 +177,7 @@ export async function launchTeam(
   baseDir: string,
   workingDir: string,
   agentsDirs: string[],
+  targetBranch: string,
 ): Promise<Result<TeamSession>> {
   const teamId = generateTeamId();
   const slug = slugifyGoal(goal);
@@ -191,7 +191,7 @@ export async function launchTeam(
   }
 
   // Initialize the queue file
-  const queue = createQueue(teamId, goal);
+  const queue = createQueue(teamId, goal, targetBranch);
   const writeResult = await writeQueue(queuePath, queue);
   if (!writeResult.ok) return writeResult;
 
@@ -228,7 +228,7 @@ export async function launchTeam(
 
     const configPath = await writeAgentConfigFile(baseDir, teamId, agentDef.name, agentConfig);
     const scriptPath = await writeAgentLaunchScript(
-      baseDir, teamId, agentDef.name, agentDef, configPath, agentSideExtensionPath,
+      baseDir, teamId, agentDef.name, agentDef, configPath,
     );
     const command = buildAgentCommand(scriptPath);
 
@@ -258,6 +258,7 @@ export async function launchTeam(
     queuePath,
     repoRoot: ctx.cwd,
     workingDir,
+    targetBranch,
     agents,
     createdAt: Date.now(),
   };
@@ -309,7 +310,7 @@ export async function spawnWorker(
   const baseDir = path.dirname(team.queuePath);
   const configPath = await writeAgentConfigFile(baseDir, team.teamId, workerName, agentConfig);
   const scriptPath = await writeAgentLaunchScript(
-    baseDir, team.teamId, workerName, workerDef, configPath, agentSideExtensionPath,
+    baseDir, team.teamId, workerName, workerDef, configPath,
   );
   const command = buildWorkerCommand(scriptPath);
 

@@ -1,7 +1,7 @@
 ---
 name: implementer
 description: Implements features, fixes, and changes based on task specifications
-model: claude-sonnet-4-5
+model: us.anthropic.claude-sonnet-4-6
 tools: read, bash, edit, write, grep, find
 ---
 

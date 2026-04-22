@@ -17,9 +17,24 @@
  */
 
 import { readFileSync } from "node:fs";
+import * as path from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 
+import {
+  commit,
+  createBranch,
+  deleteBranch,
+  getCurrentBranch,
+  getMergeConflicts,
+  hasUncommittedChanges,
+  mergeSquash,
+  resetHard,
+  stageAll,
+  worktreeAdd,
+  worktreePrune,
+  worktreeRemove,
+} from "../../lib/git.js";
 import { discoverAgentsFromDirs } from "./agent-config.js";
 import { buildWorkerCommand, writeAgentConfigFile, writeAgentLaunchScript } from "./launcher.js";
 import { capturePane, createWindow, killWindow, listWindows, sendKeys } from "../../lib/tmux.js";
@@ -36,7 +51,7 @@ import {
   rejectTask,
   writeQueue,
 } from "../../lib/task-queue.js";
-import type { ExecContext, TaskQueue } from "../../lib/types.js";
+import type { ExecContext, GitContext, TaskQueue } from "../../lib/types.js";
 import {
   AGENT_CONFIG_ENV_VAR,
   type AgentSideConfig,
@@ -134,6 +149,32 @@ export default function agentSideExtension(pi: ExtensionAPI): void {
 
   const { agentName, queuePath, canDispatch, canClose } = config;
   const label = agentLabel(config);
+  const { workingDir } = config;
+
+  // -----------------------------------------------------------------------
+  // Git helpers — used by dispatch, close, reject, and recovery tools
+  // -----------------------------------------------------------------------
+
+  /** Git context for the main repository (target branch is checked out here). */
+  function repoGitCtx(): GitContext {
+    return { exec: (cmd, args, opts) => pi.exec(cmd, args, opts), cwd: workingDir };
+  }
+
+  /** Git context for a specific worktree directory. */
+  function worktreeGitCtx(worktreePath: string): GitContext {
+    return { exec: (cmd, args, opts) => pi.exec(cmd, args, opts), cwd: worktreePath };
+  }
+
+  /**
+   * Best-effort cleanup of a worker's git worktree and branch.
+   * Errors are ignored — the worktree or branch may already be gone.
+   */
+  async function cleanupWorkerGitState(worktreePath: string, branchName: string): Promise<void> {
+    const gCtx = repoGitCtx();
+    await worktreePrune(gCtx);
+    await worktreeRemove(gCtx, worktreePath);
+    await deleteBranch(gCtx, branchName);
+  }
 
   // -----------------------------------------------------------------------
   // UI indicators — always visible so the user knows which agent this is
@@ -219,6 +260,8 @@ export default function agentSideExtension(pi: ExtensionAPI): void {
           `Attempts: ${task.attempts}`,
           `Description:\n${task.description}`,
         ];
+        if (task.worktreePath) lines.push(`Worktree: ${task.worktreePath}`);
+        if (task.branchName) lines.push(`Branch: ${task.branchName}`);
         if (task.result) lines.push(`\nPrevious result:\n${task.result}`);
         if (task.feedback) lines.push(`\nEvaluator feedback:\n${task.feedback}`);
         return { content: [{ type: "text", text: lines.join("\n") }], details: {} };
@@ -262,6 +305,18 @@ export default function agentSideExtension(pi: ExtensionAPI): void {
       const qResult = await readQueue(queuePath);
       if (!qResult.ok) throw new Error(qResult.error);
       const queue = qResult.value;
+
+      // Auto-commit any uncommitted changes in the worker's worktree
+      const task = getTaskById(queue, params.taskId);
+      if (task?.worktreePath) {
+        const gCtx = worktreeGitCtx(task.worktreePath);
+        const dirty = await hasUncommittedChanges(gCtx);
+        if (dirty.ok && dirty.value) {
+          await stageAll(gCtx);
+          await commit(gCtx, `task: ${task.title}`);
+        }
+      }
+
       const taskResult = completeTask(queue, params.taskId, params.result, agentName);
       if (!taskResult.ok) throw new Error(taskResult.error);
       const writeResult = await writeQueue(queuePath, queue);
@@ -308,18 +363,41 @@ export default function agentSideExtension(pi: ExtensionAPI): void {
         if (!qResult.ok) throw new Error(qResult.error);
         const queue = qResult.value;
 
-        const workerName = `worker-${Date.now().toString(36)}`;
-        const result = dispatchTask(queue, params.taskId, workerName, agentName);
-        if (!result.ok) throw new Error(result.error);
-
-        const writeResult = await writeQueue(queuePath, queue);
-        if (!writeResult.ok) throw new Error(`Error writing queue: ${writeResult.error}`);
-
         // Find the worker definition
         const workerType = params.workerType ?? "implementer";
         const { agents } = await discoverAgentsFromDirs(config.agentsDirs);
         const workerDef = agents.find((a) => a.role === "worker" && a.name === workerType);
         if (!workerDef) throw new Error(`Worker type '${workerType}' not found. Available: ${agents.filter(a => a.role === "worker").map(a => a.name).join(", ")}`);
+
+        const workerName = `worker-${Date.now().toString(36)}`;
+        const baseDir = path.dirname(queuePath);
+
+        // Create an isolated git worktree for the worker
+        const workerBranch = `team/${config.teamId}/${workerName}`;
+        const workerWorktreePath = path.join(baseDir, `team-${config.teamId}`, workerName);
+
+        const gCtx = repoGitCtx();
+        const branchResult = await createBranch(gCtx, workerBranch, queue.targetBranch);
+        if (!branchResult.ok) throw new Error(`Failed to create worker branch: ${branchResult.error}`);
+
+        const wtResult = await worktreeAdd(gCtx, workerWorktreePath, workerBranch);
+        if (!wtResult.ok) {
+          await deleteBranch(gCtx, workerBranch);
+          throw new Error(`Failed to create worker worktree: ${wtResult.error}`);
+        }
+
+        // Dispatch the task with worktree info
+        const result = dispatchTask(queue, params.taskId, workerName, agentName, {
+          worktreePath: workerWorktreePath,
+          branchName: workerBranch,
+        });
+        if (!result.ok) {
+          await cleanupWorkerGitState(workerWorktreePath, workerBranch);
+          throw new Error(result.error);
+        }
+
+        const writeResult = await writeQueue(queuePath, queue);
+        if (!writeResult.ok) throw new Error(`Error writing queue: ${writeResult.error}`);
 
         // Build the worker config, launch script, and command
         const workerConfig: AgentSideConfig = {
@@ -331,30 +409,29 @@ export default function agentSideExtension(pi: ExtensionAPI): void {
           canDispatch: false,
           canClose: false,
           tmuxSession: config.tmuxSession,
-          workingDir: config.workingDir,
+          workingDir: workerWorktreePath,
           agentSideExtensionPath: config.agentSideExtensionPath,
           agentsDirs: config.agentsDirs,
           agentSystemPrompt: workerDef.systemPrompt,
         };
 
-        const pathMod = await import("node:path");
-        const baseDir = pathMod.dirname(queuePath);
         const configPath = await writeAgentConfigFile(baseDir, config.teamId, workerName, workerConfig);
 
         const scriptPath = await writeAgentLaunchScript(
           baseDir, config.teamId, workerName, workerDef,
-          configPath, config.agentSideExtensionPath,
+          configPath,
         );
         const command = buildWorkerCommand(scriptPath);
 
-        // Spawn as interactive pi session
+        // Spawn as interactive pi session in the worker's worktree
         const ctx = tmuxExecCtx();
         const windowResult = await createWindow(ctx, tmuxSession, workerName, {
           command,
-          cwd: workingDir,
+          cwd: workerWorktreePath,
         });
 
         if (!windowResult.ok) {
+          await cleanupWorkerGitState(workerWorktreePath, workerBranch);
           throw new Error(`Failed to spawn worker tmux window: ${windowResult.error}`);
         }
 
@@ -371,7 +448,7 @@ export default function agentSideExtension(pi: ExtensionAPI): void {
         return {
           content: [{
             type: "text",
-            text: `Dispatched '${result.value.title}' to ${workerName} (${workerType}). Interactive worker running in tmux window '${workerName}'.`,
+            text: `Dispatched '${result.value.title}' to ${workerName} (${workerType}). Worker has isolated worktree at '${workerWorktreePath}'.`,
           }],
           details: {},
         };
@@ -389,6 +466,9 @@ export default function agentSideExtension(pi: ExtensionAPI): void {
         if (!task.assignedTo) continue;
         const alive = await isWorkerWindowAlive(task.assignedTo);
         if (!alive) {
+          if (task.worktreePath && task.branchName) {
+            await cleanupWorkerGitState(task.worktreePath, task.branchName);
+          }
           recoverTask(queue, task.id, `Worker '${task.assignedTo}' exited without completing. Window no longer exists.`, agentName);
           recovered++;
         }
@@ -489,9 +569,12 @@ export default function agentSideExtension(pi: ExtensionAPI): void {
             lines.push(`  ✗ ${workerName} — DEAD (window gone)`);
             lines.push(`    Task: ${task.title} (${task.id})`);
             if (task.assignedTo) {
+              if (task.worktreePath && task.branchName) {
+                await cleanupWorkerGitState(task.worktreePath, task.branchName);
+              }
               recoverTask(queue, task.id, `Worker '${task.assignedTo}' exited without completing.`, agentName);
               recovered++;
-              lines.push(`    → Recovered and requeued`);
+              lines.push(`    → Recovered, worktree cleaned up, and requeued`);
             }
           } else {
             lines.push(`  ✓ ${workerName} — ALIVE`);
@@ -591,8 +674,47 @@ export default function agentSideExtension(pi: ExtensionAPI): void {
         const queue = qResult.value;
 
         const task = getTaskById(queue, params.taskId);
-        const workerName = task?.assignedTo;
+        if (!task) throw new Error(`Task '${params.taskId}' not found`);
+        const workerName = task.assignedTo;
 
+        // Merge worker's branch into the target branch
+        if (task.branchName) {
+          const gCtx = repoGitCtx();
+
+          // Verify we're on the expected target branch
+          const currentBranch = await getCurrentBranch(gCtx);
+          if (!currentBranch.ok || currentBranch.value !== queue.targetBranch) {
+            throw new Error(
+              `Expected target branch '${queue.targetBranch}' but repo is on ` +
+              `'${currentBranch.ok ? currentBranch.value : "unknown"}'. Cannot merge.`,
+            );
+          }
+
+          const mergeResult = await mergeSquash(gCtx, task.branchName);
+          if (!mergeResult.ok) {
+            const conflicts = await getMergeConflicts(gCtx);
+            await resetHard(gCtx);
+            const conflictFiles = conflicts.ok ? conflicts.value.join(", ") : "unknown files";
+            throw new Error(
+              `Merge conflicts on: ${conflictFiles}. ` +
+              `Use reject_task with feedback describing the conflicts so a new worker can resolve them.`,
+            );
+          }
+
+          // Commit the squash merge (may be empty if worker made no changes)
+          const dirty = await hasUncommittedChanges(gCtx);
+          if (dirty.ok && dirty.value) {
+            const commitResult = await commit(gCtx, `feat: ${task.title}`);
+            if (!commitResult.ok) throw new Error(`Merge commit failed: ${commitResult.error}`);
+          }
+
+          // Clean up the worker's worktree and branch
+          if (task.worktreePath) {
+            await cleanupWorkerGitState(task.worktreePath, task.branchName);
+          }
+        }
+
+        // Close task in the queue
         const result = closeTask(queue, params.taskId, agentName);
         if (!result.ok) throw new Error(result.error);
         const writeResult = await writeQueue(queuePath, queue);
@@ -601,7 +723,10 @@ export default function agentSideExtension(pi: ExtensionAPI): void {
         if (workerName) await killWorkerWindow(workerName);
 
         return {
-          content: [{ type: "text", text: `Closed '${result.value.title}' after ${result.value.attempts} attempt(s). Worker window killed.` }],
+          content: [{
+            type: "text",
+            text: `Closed '${result.value.title}' after ${result.value.attempts} attempt(s). Changes merged into '${queue.targetBranch}'.`,
+          }],
           details: {},
         };
       },
@@ -623,6 +748,11 @@ export default function agentSideExtension(pi: ExtensionAPI): void {
         const task = getTaskById(queue, params.taskId);
         const workerName = task?.assignedTo;
 
+        // Clean up worker's git worktree and branch before rejecting
+        if (task?.worktreePath && task?.branchName) {
+          await cleanupWorkerGitState(task.worktreePath, task.branchName);
+        }
+
         const result = rejectTask(queue, params.taskId, params.feedback, agentName);
         if (!result.ok) throw new Error(result.error);
         const writeResult = await writeQueue(queuePath, queue);
@@ -633,7 +763,7 @@ export default function agentSideExtension(pi: ExtensionAPI): void {
         return {
           content: [{
             type: "text",
-            text: `Rejected '${result.value.title}'. Worker window killed. Requeued at top with feedback. (attempt ${result.value.attempts})`,
+            text: `Rejected '${result.value.title}'. Worktree cleaned up. Requeued at top with feedback. (attempt ${result.value.attempts})`,
           }],
           details: {},
         };

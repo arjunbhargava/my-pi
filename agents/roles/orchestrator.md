@@ -1,7 +1,7 @@
 ---
 name: orchestrator
 description: Decomposes goals into tasks, dispatches workers, and tracks progress
-model: claude-sonnet-4-5
+model: us.anthropic.claude-opus-4-6-v1
 tools: read, grep, find, ls, bash
 ---
 

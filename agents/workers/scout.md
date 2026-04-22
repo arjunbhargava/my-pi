@@ -1,7 +1,7 @@
 ---
 name: scout
 description: Fast codebase reconnaissance and information gathering
-model: claude-haiku-4-5
+model: us.anthropic.claude-sonnet-4-6
 tools: read, grep, find, ls, bash
 ---
 

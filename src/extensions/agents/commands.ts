@@ -7,6 +7,7 @@
 
 import * as path from "node:path";
 
+import { getCurrentBranch } from "../../lib/git.js";
 import { discoverAgentsFromDirs } from "./agent-config.js";
 import { launchTeam, stopTeam } from "./launcher.js";
 import { getQueueSummary, readQueue } from "../../lib/task-queue.js";
@@ -94,12 +95,20 @@ export function registerAgentCommands(
         return;
       }
 
+      // Detect the target branch (where completed work will merge)
+      const branchResult = await getCurrentBranch(state.execCtx(state.repoRoot));
+      if (!branchResult.ok) {
+        ctx.ui.notify(`Could not detect current branch: ${branchResult.error}`, "error");
+        return;
+      }
+      const targetBranch = branchResult.value;
+
       // Confirm launch
       const agentNames = permanentAgents.map((a) => a.name).join(", ");
       const workerNames = agents.filter((a) => a.role === "worker").map((a) => a.name).join(", ");
       const confirmed = await ctx.ui.confirm(
         "Launch team?",
-        `Goal: ${goal}\nPermanent agents: ${agentNames}\nAvailable workers: ${workerNames || "none"}`,
+        `Goal: ${goal}\nTarget branch: ${targetBranch}\nPermanent agents: ${agentNames}\nAvailable workers: ${workerNames || "none"}`,
       );
       if (!confirmed) return;
 
@@ -117,6 +126,7 @@ export function registerAgentCommands(
         baseDir,
         workingDir,
         agentsDirs,
+        targetBranch,
       );
 
       if (!result.ok) {

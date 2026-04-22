@@ -111,6 +111,10 @@ export interface Task {
   addedBy: string;
   /** Worker instance name when status is "active". */
   assignedTo?: string;
+  /** Absolute path to the worker's git worktree (set on dispatch). */
+  worktreePath?: string;
+  /** Git branch name for the worker's worktree (set on dispatch). */
+  branchName?: string;
   /** Worker output posted on completion (before review). */
   result?: string;
   /** Evaluator feedback attached on rejection. */
@@ -163,6 +167,8 @@ export interface TaskQueue {
   teamId: string;
   /** High-level objective for this team session. */
   goal: string;
+  /** Branch that completed work merges into. Detected at team creation. */
+  targetBranch: string;
   /** Unix timestamp (ms) when the team was created. */
   createdAt: number;
   /** Unix timestamp (ms) of the last queue mutation. */

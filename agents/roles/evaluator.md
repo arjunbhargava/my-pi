@@ -1,7 +1,7 @@
 ---
 name: evaluator
 description: Reviews completed work and is the sole authority for closing or rejecting tasks
-model: claude-sonnet-4-5
+model: us.anthropic.claude-opus-4-6-v1
 tools: read, grep, find, ls, bash
 ---
 

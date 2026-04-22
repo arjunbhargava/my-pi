@@ -69,6 +69,10 @@ function restoreState(entries: readonly { type: string; customType?: string; dat
 // ---------------------------------------------------------------------------
 
 export default function worktreeExtension(pi: ExtensionAPI): void {
+  // Skip worktree management when running as a spawned team agent —
+  // agents operate in their own worktrees and must not have file paths redirected.
+  if (process.env.PI_TEAM_AGENT_CONFIG) return;
+
   // Shared mutable state, exposed to tools and commands via ExtensionState
   let state = createEmptyState();
   let repoRoot: string | null = null;

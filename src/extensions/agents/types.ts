@@ -104,6 +104,8 @@ export interface TeamSession {
   repoRoot: string;
   /** Absolute path to the working directory for agents. */
   workingDir: string;
+  /** Branch that completed work merges into. */
+  targetBranch: string;
   /** All agent instances (permanent and active workers). */
   agents: AgentInstance[];
   /** Unix timestamp (ms) when the team was created. */

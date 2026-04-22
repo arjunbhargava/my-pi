@@ -100,11 +100,12 @@ export async function writeQueue(
 // ---------------------------------------------------------------------------
 
 /** Create a fresh empty queue for a new team session. */
-export function createQueue(teamId: string, goal: string): TaskQueue {
+export function createQueue(teamId: string, goal: string, targetBranch: string): TaskQueue {
   const now = Date.now();
   return {
     teamId,
     goal,
+    targetBranch,
     createdAt: now,
     updatedAt: now,
     tasks: [],
@@ -153,6 +154,7 @@ export function dispatchTask(
   taskId: string,
   assignedTo: string,
   dispatchedBy: string,
+  worktreeInfo?: { worktreePath: string; branchName: string },
 ): Result<Task> {
   const task = queue.tasks.find((t) => t.id === taskId);
   if (!task) return { ok: false, error: `Task '${taskId}' not found` };
@@ -164,6 +166,10 @@ export function dispatchTask(
   task.assignedTo = assignedTo;
   task.attempts += 1;
   task.updatedAt = Date.now();
+  if (worktreeInfo) {
+    task.worktreePath = worktreeInfo.worktreePath;
+    task.branchName = worktreeInfo.branchName;
+  }
   appendLog(queue, dispatchedBy, `Dispatched '${task.title}' to ${assignedTo} (attempt ${task.attempts})`);
   return { ok: true, value: task };
 }
@@ -247,6 +253,8 @@ export function rejectTask(
   task.status = "queued";
   task.feedback = feedback;
   task.assignedTo = undefined;
+  task.worktreePath = undefined;
+  task.branchName = undefined;
   task.updatedAt = Date.now();
 
   // Move to top of queue
@@ -279,6 +287,8 @@ export function recoverTask(
   task.status = "queued";
   task.feedback = reason;
   task.assignedTo = undefined;
+  task.worktreePath = undefined;
+  task.branchName = undefined;
   task.updatedAt = Date.now();
 
   // Move to top of queue
