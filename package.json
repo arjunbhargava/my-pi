@@ -5,7 +5,7 @@
   "pi": {
     "extensions": [
       "./src/extensions/worktree/worktree.ts",
-      "./src/extensions/agents/index.ts"
+      "./src/extensions/agents/agents.ts"
     ],
     "skills": [
       "./skills"

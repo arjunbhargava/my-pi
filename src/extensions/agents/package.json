@@ -1,0 +1,6 @@
+{
+  "name": "pi-agents",
+  "pi": {
+    "extensions": ["./agents.ts"]
+  }
+}
