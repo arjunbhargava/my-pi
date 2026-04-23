@@ -1,31 +1,48 @@
 # my-pi
 
-Personal coding harness for [pi](https://github.com/badlogic/pi-mono). Provides git worktree management, automatic checkpointing, and task isolation for agentic coding sessions.
+Personal coding harness for [pi](https://github.com/badlogic/pi-mono). Two extensions on top of a shared workspace primitive:
+
+- **Worktree extension** — single-task workflow. Every prompt happens inside an isolated git worktree that's auto-checkpointed after every agent turn and squash-merged into main on accept.
+- **Agents extension** — multi-agent team workflow. An orchestrator decomposes a goal into tasks, dispatches worker pi instances into isolated worktrees, and an evaluator reviews and merges their work.
+
+Both flows share the same `lib/workspace.ts` primitive, the same commit-message composer, and the same tmux-based runtime.
 
 ## What It Does
 
-Every time you ask pi to work on a feature, my-pi:
+### Single-task (`/wt-*` commands)
 
-1. **Creates a worktree** — an isolated working directory on its own git branch, so your main branch stays clean
-2. **Checkpoints automatically** — commits a snapshot after each agent interaction, giving you full undo history
-3. **Discovers existing worktrees** — detects task worktrees created by other pi sessions so you can switch between them seamlessly
-4. **Accepts or rejects** — when a feature is done, squash-merge it into main with one command, or discard it entirely
+1. **Creates a worktree** on a dedicated branch; main stays clean.
+2. **Checkpoints automatically** after each agent turn — each commit carries the prompt that drove it and the files touched.
+3. **Discovers existing worktrees** from git so other pi sessions can see them.
+4. **Accepts or rejects** with a rich squash-merge message (all prompts + all file changes) or a clean discard.
+
+### Multi-agent team (`/team-*` commands)
+
+1. **Launches a tmux session** with a live queue viewer, an orchestrator, and an evaluator.
+2. **Orchestrator** decomposes the goal into tasks and dispatches worker pi instances in fresh tmux windows, each with its own isolated worktree.
+3. **Workers** complete their task and auto-commit with description + result + file changes.
+4. **Evaluator** reviews and either closes (squash-merges into the target branch with a rich commit message) or rejects (requeues with feedback).
+5. **Rediscovers** running teams on pi restart so `/team-status`, `/team-stop`, and `/team-attach` keep working across sessions.
+6. **Auto-recovers dead workers** — a worker whose tmux window has vanished has its task requeued and its worktree cleaned up.
 
 ## Installation
 
-### For the current project (developing my-pi itself)
+### Globally (recommended — how my-pi itself is run)
 
-Create `.pi/settings.json` in the repo root:
+Add to `~/.pi/agent/settings.json`:
 
 ```json
 {
-  "extensions": ["../src/extensions/worktree"]
+  "extensions": [
+    "/path/to/my-pi/src/extensions/worktree",
+    "/path/to/my-pi/src/extensions/agents"
+  ]
 }
 ```
 
-Paths in `.pi/settings.json` resolve relative to the `.pi/` directory, so `../src/` reaches the repo root.
+Every pi session picks up both extensions. Spawned team agents inherit them too.
 
-### For other projects
+### Per-project
 
 Reference my-pi as a package in the project's `.pi/settings.json`:
 
@@ -35,65 +52,108 @@ Reference my-pi as a package in the project's `.pi/settings.json`:
 }
 ```
 
-This uses the `pi.extensions` field in my-pi's `package.json` to discover the extension.
+This picks up both extensions via my-pi's `package.json` `pi.extensions` field.
 
 ### One-shot testing
 
-Load the extension directly for a single session:
+Load a single extension directly for one session:
 
 ```bash
 pi -e /path/to/my-pi/src/extensions/worktree/worktree.ts
+pi -e /path/to/my-pi/src/extensions/agents/agents.ts
 ```
 
 ### What does NOT work
 
 Symlinking into `.pi/extensions/` does not work because Node's module resolution resolves imports relative to the symlink location, not the target. The extension's relative imports (`../../lib/git.js`) break.
 
-## Usage
+## Single-task Usage
 
-### Starting a Task
-
-Create a new worktree when beginning feature work. The agent will do this via the `worktree_create` tool, or you can use the command directly:
+### Starting a task
 
 ```
 /wt-new add user authentication
 ```
 
-This creates:
+Creates:
 - Branch: `task/add-user-authentication`
 - Directory: `../your-repo-worktrees/add-user-authentication/`
 
-All file operations (read, write, edit, bash) are automatically redirected to the worktree.
+All file operations (`read`, `write`, `edit`, `bash`) are automatically redirected to the worktree.
 
-### During Work
+### During work
 
-Work normally. Checkpoints are committed automatically after each agent interaction. You can see your current state anytime:
-
-```
-Ask the agent: "what's the current worktree status?"
-```
-
-### Switching Tasks
-
-If you have multiple tasks in progress:
+Checkpoints commit automatically after each agent turn. Each commit message looks like:
 
 ```
-/wt
+checkpoint: add auth middleware
+
+Prompt:
+please add auth middleware that validates the JWT on every route
+
+Changes:
+- add src/middleware/auth.ts
+- modify src/index.ts
 ```
 
-### Completing a Task
-
-Accept (squash-merge into main):
+### Switching / completing
 
 ```
-/wt-accept
+/wt                 # switch between active task worktrees
+/wt-accept          # squash-merge into main with a rich commit message
+/wt-reject          # discard worktree + branch
+/wt-pr              # push branch and open a GitHub PR
+/wt-update          # merge latest main into the task branch
+/wt-auto            # toggle auto-accept (squash on every agent turn)
 ```
 
-Reject (discard worktree and branch):
+The squash commit on main contains both `Prompts:` (one per checkpoint) and `Changes:` (file-level diff against main).
+
+## Multi-agent Team Usage
+
+### Launching a team
 
 ```
-/wt-reject
+/team-start build a login flow with JWT
 ```
+
+Creates:
+- A tmux session `pi-team-build-a-login-flow-with-jwt` with a `board` window showing the live queue.
+- One tmux window per permanent agent (`orchestrator`, `evaluator`) running its own pi instance.
+
+Agents are defined in `agents/roles/*.md` (permanent) and `agents/workers/*.md` (ephemeral) as markdown with YAML frontmatter:
+
+```yaml
+---
+name: orchestrator
+description: Decomposes goals into tasks, dispatches workers
+model: us.anthropic.claude-opus-4-6-v1
+tools: read, grep, find, ls, bash
+capabilities: dispatch
+---
+
+You are the orchestrator of a development team. ...
+```
+
+Capabilities control which tool bundles get registered:
+- `dispatch` — can spawn workers and monitor their progress.
+- `close` — can approve and merge reviewed tasks.
+
+### During a team run
+
+The orchestrator adds tasks, dispatches workers (each gets its own worktree and branch under `<repo>-worktrees/team-<id>/worker-<name>/`), and monitors the queue via `fs.watch` (no polling). Dead workers are auto-detected via a 10-second heartbeat; tasks from dead windows are requeued.
+
+Workers auto-commit with rich messages; evaluator merges with rich messages. Merging uses a rebase-retry strategy — if another worker landed changes on the target branch since the worker started, the worker's branch is automatically updated from target and the squash is retried.
+
+### Attaching / stopping
+
+```
+/team-status        # per-team queue summary + active windows
+/team-attach        # print the `tmux attach` command
+/team-stop          # kill the tmux session and all agent processes
+```
+
+If you quit pi while a team is running and come back later, you'll see `Reattached to N running team(s): …` on startup — the control plane recovers its view by pairing on-disk queue files with live tmux sessions.
 
 ## Commands
 
@@ -103,44 +163,121 @@ Reject (discard worktree and branch):
 | `/wt-new <description>` | Create a new task worktree |
 | `/wt-accept [message]` | Squash-merge current task into main |
 | `/wt-reject` | Discard current task's worktree and branch |
+| `/wt-pr [title]` | Push current task branch and open a GitHub PR |
+| `/wt-update` | Merge latest main into the current task branch |
+| `/wt-auto` | Toggle auto-accept mode |
+| `/team-start <goal>` | Launch a multi-agent team to work on a goal |
+| `/team-status` | Show status of running teams and their queues |
+| `/team-stop` | Stop a running team and kill its tmux session |
+| `/team-attach` | Print the `tmux attach` command for a running team |
 
-## Tools (Available to the Agent)
+## Tools (Available to Agents)
+
+### Worktree extension (all pi sessions)
 
 | Tool | Description |
 |------|-------------|
-| `worktree_status` | Show active worktree, branch, and checkpoint history |
+| `worktree_status` | Active worktree, branch, and checkpoint history |
 | `worktree_create` | Create a new task worktree branched from main |
-| `worktree_list` | List all task worktrees and their status |
+| `worktree_list` | All task worktrees and their status |
+
+### Team-agent extension (every spawned team agent)
+
+| Tool | Description |
+|------|-------------|
+| `read_queue` | Summary of the task queue or details for one task |
+| `add_task` | Append a task to the queue |
+| `complete_task` | Mark the caller's active task ready for review; auto-commits with description + result + changes |
+
+### Orchestrator only (capability: `dispatch`)
+
+| Tool | Description |
+|------|-------------|
+| `dispatch_task` | Spawn a worker with an isolated worktree in a new tmux window |
+| `monitor_tasks` | Wait for queue changes via `fs.watch`; reaps dead workers each heartbeat |
+| `check_workers` | Inspect live workers and their recent tmux output |
+
+### Evaluator only (capability: `close`)
+
+| Tool | Description |
+|------|-------------|
+| `wait_for_reviews` | Block until at least one task is in review |
+| `close_task` | Approve; squash-merge worker branch into target with rich commit message |
+| `reject_task` | Requeue with feedback; kill the worker and discard its worktree |
 
 ## Project Structure
 
 ```
 my-pi/
 ├── src/
-│   ├── lib/
-│   │   ├── types.ts              # Shared types (git context, result types)
-│   │   └── git.ts                # Git command wrappers
+│   ├── lib/                           # pi-agnostic utilities
+│   │   ├── types.ts                   # Shared types (git, result, queue, exec)
+│   │   ├── git.ts                     # Git CLI wrappers (only place git is invoked)
+│   │   ├── tmux.ts                    # tmux CLI wrappers
+│   │   ├── task-queue.ts              # Atomic JSON queue: read/write + mutations
+│   │   ├── workspace.ts               # Shared branch+worktree primitives (create/destroy/squash-merge)
+│   │   └── commit-message.ts          # Rich commit-message composer used by both extensions
 │   └── extensions/
-│       └── worktree/
-│           ├── index.ts          # Extension entry point
-│           ├── types.ts          # Extension-specific types
-│           ├── checkpoint.ts     # Automatic checkpoint commits
-│           ├── manager.ts        # Worktree/task lifecycle
-│           └── accept-reject.ts  # Squash-merge and discard logic
+│       ├── worktree/                  # Single-task /wt-* extension
+│       │   ├── worktree.ts            # Entry point (only file importing from pi)
+│       │   ├── commands.ts            # /wt, /wt-new, /wt-accept, ...
+│       │   ├── tools.ts               # worktree_status, worktree_create, worktree_list
+│       │   ├── manager.ts             # Worktree/task lifecycle
+│       │   ├── checkpoint.ts          # Per-turn rich-message commits
+│       │   ├── accept-reject.ts       # Squash-merge / discard
+│       │   ├── pull-request.ts        # /wt-pr implementation
+│       │   ├── shared-state.ts        # Cross-session task visibility
+│       │   ├── extension-state.ts     # Shared state shape
+│       │   └── types.ts
+│       └── agents/                    # Multi-agent /team-* extension
+│           ├── agents.ts              # Control-plane entry (only file importing from pi)
+│           ├── commands.ts            # /team-start, /team-status, /team-stop, /team-attach
+│           ├── launcher.ts            # tmux session setup + spawnAgentWindow helper
+│           ├── discovery.ts           # Rediscover live teams on pi restart
+│           ├── agent-config.ts        # Parse agents/roles/*.md and agents/workers/*.md
+│           ├── types.ts               # TeamSession, TeamAgentConfig, Capability
+│           └── team-agent/            # Extension loaded inside each spawned team agent
+│               ├── index.ts           # Registers tool bundles by capability
+│               ├── config.ts          # Load TeamAgentConfig from env var
+│               ├── session.ts         # Per-turn context injection + status UI
+│               ├── runtime.ts         # Shared helpers (git contexts, queue I/O, worker lifecycle)
+│               ├── watch.ts           # fs.watch-based wait loop for monitor/wait tools
+│               └── tools/
+│                   ├── queue.ts       # read_queue, add_task, complete_task (all agents)
+│                   ├── dispatch.ts    # dispatch_task, monitor_tasks, check_workers (dispatch cap)
+│                   └── review.ts      # wait_for_reviews, close_task, reject_task (close cap)
+├── agents/
+│   ├── roles/                         # Permanent agents (one window per team)
+│   │   ├── orchestrator.md
+│   │   └── evaluator.md
+│   └── workers/                       # Ephemeral worker templates
+│       ├── implementer.md
+│       ├── scout.md
+│       └── researcher.md
 ├── skills/
-│   └── worktree-workflow/
-│       └── SKILL.md              # Teaches the agent worktree conventions
-├── AGENTS.md                     # Coding standards for this repo
-├── package.json                  # Pi package manifest
+│   └── worktree-workflow/SKILL.md     # Teaches the agent worktree conventions
+├── scripts/
+│   ├── test-unit.sh                   # Runs all unit tests
+│   └── test-smoke.sh                  # Queue + agent-config + tsc smoke test
+├── tests/                             # Unit + integration tests (tsx, no Jest)
+├── AGENTS.md                          # Coding standards for this repo
+├── package.json                       # Pi package manifest
 └── tsconfig.json
+```
+
+## Testing
+
+```bash
+./scripts/test-unit.sh      # unit + integration tests (tsc clean, seven test files)
+./scripts/test-smoke.sh     # end-to-end smoke via a fixture repo
 ```
 
 ## Roadmap
 
-- **Multi-agent orchestration** — multiple pi instances in tmux panes, coordinated via event bus
-- **External messaging** — Slack bridge for agent notifications
-- **Persistent memory** — cross-session knowledge storage
-- **Docker support** — containerized worktree environments
+- **Kill-worker tool** — escape valve for hung workers (alive but not making progress).
+- **`check_workers` tmux scrollback** — currently only the visible pane is captured; older output scrolls past.
+- **Artifact cleanup** — reap `.team-configs/*.{json,sh,log}` and crashed queue files on `/team-stop`.
+- **Docker transport** — replace tmux as the agent spawn mechanism for truly isolated workers.
 
 ## License
 
