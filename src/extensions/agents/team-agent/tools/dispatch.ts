@@ -107,7 +107,10 @@ async function handleDispatch(
   workerTypeArg: string | undefined,
 ) {
   const { config, agentName } = runtime;
-  const queue = await runtime.loadQueue();
+  // Snapshot read (unlocked) — targetBranch is immutable after team
+  // creation, so reading it outside the lock is safe. dispatchTask()
+  // below re-validates the task's status under the lock.
+  const snapshot = await runtime.loadQueue();
 
   const workerType = workerTypeArg ?? DEFAULT_WORKER_TYPE;
   const workerDef = await findWorkerDefinition(config.agentsDirs, workerType);
@@ -120,21 +123,28 @@ async function handleDispatch(
   const workspaceResult = await createWorkspace(runtime.repoGit(), {
     worktreePath: workerWorktreePath,
     branchName: workerBranch,
-    baseBranch: queue.targetBranch,
+    baseBranch: snapshot.targetBranch,
   });
   if (!workspaceResult.ok) {
     throw new Error(`Failed to create worker workspace: ${workspaceResult.error}`);
   }
 
-  const dispatched = dispatchTask(queue, taskId, workerName, agentName, {
-    worktreePath: workerWorktreePath,
-    branchName: workerBranch,
-  });
-  if (!dispatched.ok) {
+  let dispatched;
+  try {
+    dispatched = await runtime.withQueueLock((queue) => {
+      const result = dispatchTask(queue, taskId, workerName, agentName, {
+        worktreePath: workerWorktreePath,
+        branchName: workerBranch,
+      });
+      if (!result.ok) throw new Error(result.error);
+      return result.value;
+    });
+  } catch (err) {
+    // Task state changed between snapshot and lock (or any other
+    // mutation failure) — tear down the workspace we just created.
     await runtime.cleanupWorkerGit(workerWorktreePath, workerBranch);
-    throw new Error(dispatched.error);
+    throw err;
   }
-  await runtime.saveQueue(queue);
 
   const workerConfig: TeamAgentConfig = {
     teamId: config.teamId,
@@ -169,7 +179,7 @@ async function handleDispatch(
   return {
     content: [{
       type: "text" as const,
-      text: `Dispatched '${dispatched.value.title}' to ${workerName} (${workerType}). Worker has isolated worktree at '${workerWorktreePath}'.`,
+      text: `Dispatched '${dispatched.title}' to ${workerName} (${workerType}). Worker has isolated worktree at '${workerWorktreePath}'.`,
     }],
     details: {},
   };
@@ -203,15 +213,20 @@ async function handleMonitor(
   const outcome = await watchQueueUntil(
     runtime.queuePath,
     async (queue) => {
-      // First: reap workers whose tmux windows have vanished. This
-      // runs even when no queue write triggered the wake, thanks to
-      // the heartbeat.
-      const recovered = await recoverDeadWorkers(runtime, queue);
-      if (recovered > 0) {
-        await runtime.saveQueue(queue);
-        finalMessage =
-          `Recovered ${recovered} task(s) from dead workers.\n\n${getQueueSummary(queue)}`;
-        return "done";
+      // First: reap workers whose tmux windows have vanished. Detection
+      // and git cleanup happen unlocked so other agents can still
+      // mutate the queue; only the final recoverTask mutation takes
+      // the lock. Heartbeat gives us a wake even without a queue write.
+      const dead = await detectDeadWorkers(runtime, queue);
+      if (dead.length > 0) {
+        await cleanupDeadWorkers(runtime, dead);
+        const recovered = await applyDeadWorkerRecovery(runtime, dead);
+        if (recovered > 0) {
+          const fresh = await runtime.loadQueue();
+          finalMessage =
+            `Recovered ${recovered} task(s) from dead workers.\n\n${getQueueSummary(fresh)}`;
+          return "done";
+        }
       }
 
       // Next: diff task identities + statuses. A (complete, dispatch)
@@ -288,7 +303,7 @@ async function handleCheckWorkers(runtime: TeamAgentRuntime) {
 
   const tmuxExec = runtime.tmuxExec();
   const lines: string[] = [`Active workers (${activeTasks.length}):\n`];
-  let recovered = 0;
+  const dead: DeadWorker[] = [];
 
   for (const task of activeTasks) {
     const workerName = task.assignedTo ?? "(unknown)";
@@ -298,15 +313,12 @@ async function handleCheckWorkers(runtime: TeamAgentRuntime) {
       lines.push(`  ✗ ${workerName} — DEAD (window gone)`);
       lines.push(`    Task: ${task.title} (${task.id})`);
       if (task.assignedTo) {
-        if (task.worktreePath && task.branchName) {
-          await runtime.cleanupWorkerGit(task.worktreePath, task.branchName);
-        }
-        recoverTask(
-          queue, task.id,
-          `Worker '${task.assignedTo}' exited without completing.`,
-          runtime.agentName,
-        );
-        recovered++;
+        dead.push({
+          taskId: task.id,
+          assignedTo: task.assignedTo,
+          worktreePath: task.worktreePath,
+          branchName: task.branchName,
+        });
         lines.push(`    → Recovered, worktree cleaned up, and requeued`);
       }
     } else {
@@ -330,8 +342,9 @@ async function handleCheckWorkers(runtime: TeamAgentRuntime) {
     lines.push("");
   }
 
-  if (recovered > 0) {
-    await runtime.saveQueue(queue);
+  if (dead.length > 0) {
+    await cleanupDeadWorkers(runtime, dead);
+    const recovered = await applyDeadWorkerRecovery(runtime, dead);
     lines.push(`Recovered ${recovered} task(s) from dead workers. They are requeued at the top.`);
   }
 
@@ -342,31 +355,75 @@ async function handleCheckWorkers(runtime: TeamAgentRuntime) {
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Scan active tasks for dead workers; recover each one and clean up its
- * git state. Mutates the queue in place — the caller must saveQueue.
- * Returns the number of tasks recovered.
- */
-async function recoverDeadWorkers(runtime: TeamAgentRuntime, queue: TaskQueue): Promise<number> {
-  const activeTasks = getTasksByStatus(queue, "active");
-  let recovered = 0;
+/** Identifier + worktree pointers for a worker whose tmux window has died. */
+interface DeadWorker {
+  taskId: string;
+  assignedTo: string;
+  worktreePath?: string;
+  branchName?: string;
+}
 
+/**
+ * Scan active tasks for dead workers. Pure detection — no mutation,
+ * no cleanup. Safe to call from an unlocked snapshot of the queue.
+ */
+async function detectDeadWorkers(
+  runtime: TeamAgentRuntime,
+  queue: TaskQueue,
+): Promise<DeadWorker[]> {
+  const activeTasks = getTasksByStatus(queue, "active");
+  const dead: DeadWorker[] = [];
   for (const task of activeTasks) {
     if (!task.assignedTo) continue;
     const alive = await runtime.isWorkerAlive(task.assignedTo);
     if (alive) continue;
-
-    if (task.worktreePath && task.branchName) {
-      await runtime.cleanupWorkerGit(task.worktreePath, task.branchName);
-    }
-    recoverTask(
-      queue, task.id,
-      `Worker '${task.assignedTo}' exited without completing. Window no longer exists.`,
-      runtime.agentName,
-    );
-    recovered++;
+    dead.push({
+      taskId: task.id,
+      assignedTo: task.assignedTo,
+      worktreePath: task.worktreePath,
+      branchName: task.branchName,
+    });
   }
+  return dead;
+}
 
-  return recovered;
+/**
+ * Clean up the git state (worktree + branch) of each dead worker.
+ * Slow, so kept outside the queue lock. Called by the monitor and
+ * check_workers paths before applying recovery to the queue.
+ */
+async function cleanupDeadWorkers(runtime: TeamAgentRuntime, dead: DeadWorker[]): Promise<void> {
+  for (const w of dead) {
+    if (w.worktreePath && w.branchName) {
+      await runtime.cleanupWorkerGit(w.worktreePath, w.branchName);
+    }
+  }
+}
+
+/**
+ * Apply recovery to the queue under a lock. Re-reads the queue inside
+ * the lock so concurrent mutations don't get clobbered, and silently
+ * skips dead workers whose tasks have since moved off `active` (e.g.
+ * already recovered by a parallel caller). Returns the number of tasks
+ * actually recovered.
+ */
+async function applyDeadWorkerRecovery(
+  runtime: TeamAgentRuntime,
+  dead: DeadWorker[],
+): Promise<number> {
+  if (dead.length === 0) return 0;
+  return await runtime.withQueueLock((queue) => {
+    let recovered = 0;
+    for (const w of dead) {
+      const result = recoverTask(
+        queue,
+        w.taskId,
+        `Worker '${w.assignedTo}' exited without completing. Window no longer exists.`,
+        runtime.agentName,
+      );
+      if (result.ok) recovered++;
+    }
+    return recovered;
+  });
 }
 

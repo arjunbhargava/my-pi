@@ -153,8 +153,11 @@ async function handleWait(
 // ---------------------------------------------------------------------------
 
 async function handleClose(runtime: TeamAgentRuntime, taskId: string) {
-  const queue = await runtime.loadQueue();
-  const task = getTaskById(queue, taskId);
+  // Snapshot read (unlocked) — we only need task info and targetBranch
+  // to drive the merge + cleanup. The queue mutation takes the lock
+  // below and re-validates the task's status there.
+  const snapshot = await runtime.loadQueue();
+  const task = getTaskById(snapshot, taskId);
   if (!task) throw new Error(`Task '${taskId}' not found`);
 
   const workerName = task.assignedTo;
@@ -163,14 +166,14 @@ async function handleClose(runtime: TeamAgentRuntime, taskId: string) {
     // Compose the squash commit message BEFORE merging: we need the
     // diff between target and the worker branch, which only exists
     // while the branch is still alive.
-    const commitMessage = await buildCloseCommitMessage(runtime, queue.targetBranch, task);
+    const commitMessage = await buildCloseCommitMessage(runtime, snapshot.targetBranch, task);
 
     const mergeResult = await squashMergeWorkspace(
       runtime.repoGit(),
       {
         worktreePath: task.worktreePath,
         branchName: task.branchName,
-        baseBranch: queue.targetBranch,
+        baseBranch: snapshot.targetBranch,
       },
       {
         commitMessage,
@@ -192,14 +195,16 @@ async function handleClose(runtime: TeamAgentRuntime, taskId: string) {
     await runtime.killWorkerWindow(workerName);
   }
 
-  const result = closeTask(queue, taskId, runtime.agentName);
-  if (!result.ok) throw new Error(result.error);
-  await runtime.saveQueue(queue);
+  const closed = await runtime.withQueueLock((queue) => {
+    const result = closeTask(queue, taskId, runtime.agentName);
+    if (!result.ok) throw new Error(result.error);
+    return result.value;
+  });
 
   return {
     content: [{
       type: "text" as const,
-      text: `Closed '${result.value.title}' after ${result.value.attempts} attempt(s). Changes merged into '${queue.targetBranch}'.`,
+      text: `Closed '${closed.title}' after ${closed.attempts} attempt(s). Changes merged into '${snapshot.targetBranch}'.`,
     }],
     details: {},
   };
@@ -245,8 +250,11 @@ async function buildCloseCommitMessage(
 // ---------------------------------------------------------------------------
 
 async function handleReject(runtime: TeamAgentRuntime, taskId: string, feedback: string) {
-  const queue = await runtime.loadQueue();
-  const task = getTaskById(queue, taskId);
+  // Snapshot read (unlocked) to figure out which worker to kill and
+  // which worktree to destroy. The queue mutation below takes the
+  // lock and re-validates that the task is still in review.
+  const snapshot = await runtime.loadQueue();
+  const task = getTaskById(snapshot, taskId);
   const workerName = task?.assignedTo;
 
   // Kill the worker first so destroying its worktree doesn't yank the
@@ -260,14 +268,16 @@ async function handleReject(runtime: TeamAgentRuntime, taskId: string, feedback:
     });
   }
 
-  const result = rejectTask(queue, taskId, feedback, runtime.agentName);
-  if (!result.ok) throw new Error(result.error);
-  await runtime.saveQueue(queue);
+  const rejected = await runtime.withQueueLock((queue) => {
+    const result = rejectTask(queue, taskId, feedback, runtime.agentName);
+    if (!result.ok) throw new Error(result.error);
+    return result.value;
+  });
 
   return {
     content: [{
       type: "text" as const,
-      text: `Rejected '${result.value.title}'. Worktree cleaned up. Requeued at top with feedback. (attempt ${result.value.attempts})`,
+      text: `Rejected '${rejected.title}'. Worktree cleaned up. Requeued at top with feedback. (attempt ${rejected.attempts})`,
     }],
     details: {},
   };

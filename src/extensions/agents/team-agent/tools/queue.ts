@@ -84,9 +84,9 @@ export function registerQueueTools(pi: ExtensionAPI, runtime: TeamAgentRuntime):
       description: Type.String({ description: "Detailed description of what needs to be done" }),
     }),
     async execute(_id, params) {
-      const queue = await runtime.loadQueue();
-      const task = addTask(queue, params.title, params.description, agentName);
-      await runtime.saveQueue(queue);
+      const task = await runtime.withQueueLock((queue) =>
+        addTask(queue, params.title, params.description, agentName),
+      );
       return {
         content: [{ type: "text", text: `Added task '${task.title}' (${task.id})` }],
         details: {},
@@ -105,23 +105,27 @@ export function registerQueueTools(pi: ExtensionAPI, runtime: TeamAgentRuntime):
       }),
     }),
     async execute(_id, params) {
-      const queue = await runtime.loadQueue();
-      const task = getTaskById(queue, params.taskId);
+      // Read the task to decide whether to auto-commit. Safe to read
+      // unlocked: atomic rename guarantees a consistent snapshot, and
+      // completeTask() below re-validates state under the lock.
+      const snapshot = await runtime.loadQueue();
+      const snapTask = getTaskById(snapshot, params.taskId);
 
       // Auto-commit any uncommitted changes so the evaluator's merge
       // has a stable tree to work with. The commit message bundles the
       // task description and the worker's result summary together with
       // the list of files this commit touches, so the worker branch's
-      // git log reads as a self-contained record.
-      if (task?.worktreePath) {
-        const git = runtime.worktreeGit(task.worktreePath);
+      // git log reads as a self-contained record. Done OUTSIDE the
+      // queue lock because git commits can take seconds.
+      if (snapTask?.worktreePath) {
+        const git = runtime.worktreeGit(snapTask.worktreePath);
         const dirty = await hasUncommittedChanges(git);
         if (dirty.ok && dirty.value) {
           await stageAll(git);
           const staged = await diffStaged(git);
           const fileItems = staged.ok ? formatFileChanges(staged.value) : [];
-          const message = composeCommitMessage(`task: ${task.title}`, [
-            { heading: "Description", body: task.description },
+          const message = composeCommitMessage(`task: ${snapTask.title}`, [
+            { heading: "Description", body: snapTask.description },
             { heading: "Result", body: params.result },
             { heading: "Changes", items: fileItems },
           ]);
@@ -129,11 +133,13 @@ export function registerQueueTools(pi: ExtensionAPI, runtime: TeamAgentRuntime):
         }
       }
 
-      const result = completeTask(queue, params.taskId, params.result, agentName);
-      if (!result.ok) throw new Error(result.error);
-      await runtime.saveQueue(queue);
+      const task = await runtime.withQueueLock((queue) => {
+        const result = completeTask(queue, params.taskId, params.result, agentName);
+        if (!result.ok) throw new Error(result.error);
+        return result.value;
+      });
       return {
-        content: [{ type: "text", text: `Task '${result.value.title}' marked for review.` }],
+        content: [{ type: "text", text: `Task '${task.title}' marked for review.` }],
         details: {},
       };
     },

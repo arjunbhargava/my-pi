@@ -9,6 +9,7 @@
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import * as lockfile from "proper-lockfile";
 
 import {
   readQueue,
@@ -37,6 +38,14 @@ export interface TeamAgentRuntime {
   loadQueue(): Promise<TaskQueue>;
   /** Write the queue file atomically. Throws on I/O failure. */
   saveQueue(queue: TaskQueue): Promise<void>;
+  /**
+   * Run a queue mutation under an advisory file lock: acquire the lock,
+   * load a fresh copy of the queue, let the caller mutate it, save, and
+   * release. Every load-mutate-save cycle must go through this to avoid
+   * lost writes when multiple agents mutate concurrently. Long-running
+   * side effects (git, tmux) should stay OUTSIDE the callback.
+   */
+  withQueueLock<T>(fn: (queue: TaskQueue) => Promise<T> | T): Promise<T>;
 
   /** Git context rooted at the main repository. */
   repoGit(): GitContext;
@@ -77,6 +86,29 @@ export function createRuntime(pi: ExtensionAPI, config: TeamAgentConfig): TeamAg
     async saveQueue(queue) {
       const result = await writeQueue(config.queuePath, queue);
       if (!result.ok) throw new Error(`Error writing queue: ${result.error}`);
+    },
+
+    async withQueueLock(fn) {
+      // proper-lockfile creates a sibling `.lock` dir next to the queue
+      // file and retries with backoff if another process holds it. The
+      // `stale` window lets us reclaim a lock orphaned by a crashed
+      // agent; the retry budget covers normal contention between
+      // concurrent add_task / complete_task calls.
+      const release = await lockfile.lock(config.queuePath, {
+        retries: { retries: 10, minTimeout: 50, maxTimeout: 500, factor: 1.5 },
+        stale: 10_000,
+      });
+      try {
+        const readResult = await readQueue(config.queuePath);
+        if (!readResult.ok) throw new Error(readResult.error);
+        const queue = readResult.value;
+        const result = await fn(queue);
+        const writeResult = await writeQueue(config.queuePath, queue);
+        if (!writeResult.ok) throw new Error(`Error writing queue: ${writeResult.error}`);
+        return result;
+      } finally {
+        await release();
+      }
     },
 
     repoGit,

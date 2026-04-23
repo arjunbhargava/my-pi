@@ -14,6 +14,10 @@ echo "--- task-queue ---"
 npx tsx "$PROJECT_DIR/tests/task-queue.test.ts"
 echo ""
 
+echo "--- queue-lock ---"
+npx tsx "$PROJECT_DIR/tests/queue-lock.test.ts"
+echo ""
+
 echo "--- agent-config ---"
 npx tsx "$PROJECT_DIR/tests/agent-config.test.ts"
 echo ""
