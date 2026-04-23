@@ -5,11 +5,15 @@
  * commands for the user's control-plane pi instance.
  */
 
+import { mkdir, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 
 import { getCurrentBranch } from "../../lib/git.js";
+import { renderSessionToText } from "../../lib/session-archive.js";
 import { discoverAgentsFromDirs } from "./agent-config.js";
-import { launchTeam, stopTeam } from "./launcher.js";
+import { findArchivedAgent, listTeamArchives } from "./archive.js";
+import type { ArchivedTeam } from "./archive.js";
+import { CONFIG_DIR_NAME, launchTeam, stopTeam } from "./launcher.js";
 import { getQueueSummary, readQueue } from "../../lib/task-queue.js";
 import { listWindows } from "../../lib/tmux.js";
 import type { ExecContext } from "../../lib/types.js";
@@ -234,6 +238,74 @@ export function registerAgentCommands(
     },
   });
 
+  register("team-logs", {
+    description:
+      "List past team agent sessions, or render one agent's newest session as a text transcript (search with rg).",
+    handler: async (args, ctx) => {
+      if (!state.repoRoot) {
+        ctx.ui.notify("Not in a git repository.", "error");
+        return;
+      }
+      const baseDir = `${state.repoRoot}-worktrees`;
+      const agentName = args?.trim();
+
+      if (!agentName) {
+        const teams = await listTeamArchives(baseDir);
+        ctx.ui.notify(formatArchiveListing(teams, baseDir), "info");
+        return;
+      }
+
+      const match = await findArchivedAgent(baseDir, agentName);
+      if (!match) {
+        ctx.ui.notify(
+          `No archived agent named '${agentName}'. Run /team-logs (no args) to see what's available.`,
+          "error",
+        );
+        return;
+      }
+      const { team, agent } = match;
+      if (agent.sessions.length === 0) {
+        ctx.ui.notify(
+          `Agent '${agentName}' (team ${team.teamId}) has no recorded sessions at ${agent.sessionDir}.`,
+          "warning",
+        );
+        return;
+      }
+
+      const newest = agent.sessions[0];
+      let transcript: string;
+      try {
+        transcript = await renderSessionToText(newest.path);
+      } catch (err) {
+        ctx.ui.notify(
+          `Failed to render session: ${err instanceof Error ? err.message : String(err)}`,
+          "error",
+        );
+        return;
+      }
+
+      const outDir = path.join(baseDir, CONFIG_DIR_NAME);
+      await mkdir(outDir, { recursive: true });
+      const outPath = path.join(outDir, `${team.teamId}-${agent.agentName}.transcript.txt`);
+      await writeFile(outPath, transcript, "utf-8");
+
+      ctx.ui.notify(
+        [
+          `Rendered transcript for ${agent.agentName} (team ${team.teamId}):`,
+          `  ${outPath}`,
+          "",
+          `Source: ${newest.path}`,
+          agent.sessions.length > 1
+            ? `(${agent.sessions.length - 1} older session(s) also in ${agent.sessionDir})`
+            : "",
+          "",
+          `Search all transcripts: rg 'pattern' ${outDir}`,
+        ].filter(Boolean).join("\n"),
+        "info",
+      );
+    },
+  });
+
   register("team-attach", {
     description: "Print the tmux attach command for a running team",
     handler: async (_args, ctx) => {
@@ -262,4 +334,39 @@ export function registerAgentCommands(
       );
     },
   });
+}
+
+// ---------------------------------------------------------------------------
+// Formatters
+// ---------------------------------------------------------------------------
+
+/** Human listing for `/team-logs` with no arguments. */
+function formatArchiveListing(teams: ArchivedTeam[], baseDir: string): string {
+  if (teams.length === 0) {
+    return `No team archives under ${baseDir}. Launch one with /team-start.`;
+  }
+
+  const lines: string[] = [];
+  for (const team of teams) {
+    lines.push(`Team ${team.teamId}: ${team.goal}`);
+    lines.push(`  queue: ${team.queuePath}`);
+    lines.push(`  updated: ${new Date(team.updatedAt).toISOString()}`);
+
+    if (team.agents.length === 0) {
+      lines.push("  (no agent configs found)");
+    } else {
+      lines.push("  agents:");
+      for (const agent of team.agents) {
+        const sessionCount = agent.sessions.length;
+        const newest = sessionCount > 0
+          ? ` last ${new Date(agent.sessions[0].mtimeMs).toISOString()}`
+          : " no sessions";
+        lines.push(`    ${agent.agentName} [${agent.role}] — ${sessionCount} session(s)${newest}`);
+      }
+    }
+    lines.push("");
+  }
+
+  lines.push(`Render a session: /team-logs <agent-name>`);
+  return lines.join("\n");
 }

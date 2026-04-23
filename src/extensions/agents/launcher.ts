@@ -34,7 +34,7 @@ import {
 // ---------------------------------------------------------------------------
 
 /** Directory name for agent config files within the team base dir. */
-const CONFIG_DIR_NAME = ".team-configs";
+export const CONFIG_DIR_NAME = ".team-configs";
 
 // ---------------------------------------------------------------------------
 // Helpers

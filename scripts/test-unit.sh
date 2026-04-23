@@ -18,6 +18,10 @@ echo "--- queue-lock ---"
 npx tsx "$PROJECT_DIR/tests/queue-lock.test.ts"
 echo ""
 
+echo "--- session-archive ---"
+npx tsx "$PROJECT_DIR/tests/session-archive.test.ts"
+echo ""
+
 echo "--- agent-config ---"
 npx tsx "$PROJECT_DIR/tests/agent-config.test.ts"
 echo ""
