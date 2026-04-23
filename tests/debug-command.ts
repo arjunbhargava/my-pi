@@ -1,14 +1,19 @@
 /**
- * Debug script: prints the exact command string that would be
- * passed to tmux new-window for a worker, then tries to run it.
+ * Debug script: generates a worker launch script, prints the tmux
+ * command that would invoke it, and tries to run that command in a
+ * throwaway tmux session.
  *
  * Usage: npx tsx tests/debug-command.ts
  */
 
-import { writeFileSync } from "node:fs";
 import { execSync } from "node:child_process";
-import { buildWorkerCommand } from "../src/extensions/agents/launcher.js";
-import type { AgentDefinition } from "../src/extensions/agents/types.js";
+import { mkdirSync } from "node:fs";
+import {
+  buildWorkerCommand,
+  writeAgentConfigFile,
+  writeAgentLaunchScript,
+} from "../src/extensions/agents/launcher.js";
+import type { AgentDefinition, TeamAgentConfig } from "../src/extensions/agents/types.js";
 
 const fakeDef: AgentDefinition = {
   name: "implementer",
@@ -20,8 +25,7 @@ const fakeDef: AgentDefinition = {
   filePath: `${process.cwd()}/agents/workers/implementer.md`,
 };
 
-// Write a fake config file
-const fakeConfig = {
+const fakeConfig: TeamAgentConfig = {
   teamId: "test123",
   goal: "test goal",
   agentName: "worker-test",
@@ -31,41 +35,46 @@ const fakeConfig = {
   canClose: false,
   tmuxSession: "pi-test",
   workingDir: process.cwd(),
-  agentSideExtensionPath: `${process.cwd()}/src/extensions/agents/agent-side.ts`,
+  teamAgentExtensionPath: `${process.cwd()}/src/extensions/agents/team-agent/index.ts`,
   agentsDirs: [],
 };
-const configPath = "/tmp/debug-agent-config.json";
-writeFileSync(configPath, JSON.stringify(fakeConfig, null, 2));
 
-const prompt = "You are worker-test. Your assigned task ID is: deadbeef. Use read_queue to get your task details, then do the work, then use complete_task when done.";
+async function main(): Promise<void> {
+  const baseDir = "/tmp/debug-team";
+  mkdirSync(baseDir, { recursive: true });
 
-const cmd = buildWorkerCommand(fakeDef, configPath, fakeConfig.agentSideExtensionPath, prompt);
+  const configPath = await writeAgentConfigFile(baseDir, fakeConfig.teamId, fakeConfig.agentName, fakeConfig);
+  const scriptPath = await writeAgentLaunchScript(
+    baseDir, fakeConfig.teamId, fakeConfig.agentName, fakeDef, configPath,
+  );
 
-console.log("=== GENERATED COMMAND ===");
-console.log(cmd);
-console.log("");
-console.log(`=== LENGTH: ${cmd.length} chars ===`);
-console.log("");
+  const cmd = buildWorkerCommand(scriptPath);
+  console.log("=== GENERATED COMMAND ===");
+  console.log(cmd);
+  console.log(`\n=== LENGTH: ${cmd.length} chars ===\n`);
 
-// Try to run it in a tmux session to see what happens
-console.log("=== TESTING IN TMUX ===");
-try {
-  execSync("tmux kill-session -t pi-debug-test 2>/dev/null", { stdio: "ignore" });
-} catch { /* ignore */ }
+  console.log("=== TESTING IN TMUX ===");
+  try {
+    execSync("tmux kill-session -t pi-debug-test 2>/dev/null", { stdio: "ignore" });
+  } catch { /* ignore */ }
 
-try {
-  execSync("tmux new-session -d -s pi-debug-test -n main");
-  // Pass the command exactly as pi.exec would — as a single argument
-  execSync(`tmux new-window -t pi-debug-test -n worker ${JSON.stringify(cmd)}`);
-  console.log("  ✓ tmux new-window succeeded");
+  try {
+    execSync("tmux new-session -d -s pi-debug-test -n main");
+    execSync(`tmux new-window -t pi-debug-test -n worker ${JSON.stringify(cmd)}`);
+    console.log("  ✓ tmux new-window succeeded");
 
-  // Wait and capture
-  execSync("sleep 2");
-  const output = execSync("tmux capture-pane -t pi-debug-test:worker -p").toString();
-  console.log("=== CAPTURED OUTPUT ===");
-  console.log(output.slice(0, 500));
-} catch (err) {
-  console.log(`  ✗ Error: ${err instanceof Error ? err.message : err}`);
-} finally {
-  try { execSync("tmux kill-session -t pi-debug-test 2>/dev/null"); } catch { /* ignore */ }
+    execSync("sleep 2");
+    const output = execSync("tmux capture-pane -t pi-debug-test:worker -p").toString();
+    console.log("=== CAPTURED OUTPUT ===");
+    console.log(output.slice(0, 500));
+  } catch (err) {
+    console.log(`  ✗ Error: ${err instanceof Error ? err.message : err}`);
+  } finally {
+    try { execSync("tmux kill-session -t pi-debug-test 2>/dev/null"); } catch { /* ignore */ }
+  }
 }
+
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

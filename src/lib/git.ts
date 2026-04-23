@@ -323,6 +323,20 @@ export async function getMergeConflicts(ctx: GitContext): Promise<Result<string[
 }
 
 /**
+ * Abort a merge in progress, restoring the working tree to pre-merge state.
+ * Works for regular merges (not squash merges, which don't create MERGE_HEAD).
+ *
+ * @param ctx - Git context.
+ */
+export async function abortMerge(ctx: GitContext): Promise<Result<void>> {
+  const result = await execGit(ctx, ["merge", "--abort"]);
+  if (result.code !== 0) {
+    return { ok: false, error: `Failed to abort merge: ${result.stderr.trim()}` };
+  }
+  return { ok: true, value: undefined };
+}
+
+/**
  * Reset the working tree and index to HEAD, discarding all changes.
  * Used to clean up after a failed squash merge with conflicts.
  *

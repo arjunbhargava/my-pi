@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { strict as assert } from "node:assert";
 import { writeAgentConfigFile, writeAgentLaunchScript, buildWorkerCommand } from "../src/extensions/agents/launcher.js";
-import type { AgentDefinition, AgentSideConfig } from "../src/extensions/agents/types.js";
+import type { AgentDefinition, TeamAgentConfig } from "../src/extensions/agents/types.js";
 
 const SESSION = "pi-spawn-test";
 const TMPDIR = path.join(tmpdir(), `pi-spawn-test-${Date.now()}`);
@@ -26,7 +26,7 @@ async function run(): Promise<void> {
   mkdirSync(TMPDIR, { recursive: true });
 
   const projectDir = path.resolve(new URL(".", import.meta.url).pathname, "..");
-  const agentSidePath = path.join(projectDir, "src/extensions/agents/agent-side.ts");
+  const teamAgentPath = path.join(projectDir, "src/extensions/agents/team-agent/index.ts");
   const workerDefPath = path.join(projectDir, "agents/workers/implementer.md");
 
   const workerDef: AgentDefinition = {
@@ -37,7 +37,7 @@ async function run(): Promise<void> {
     filePath: workerDefPath,
   };
 
-  const workerConfig: AgentSideConfig = {
+  const workerConfig: TeamAgentConfig = {
     teamId: "test",
     goal: "test spawn",
     agentName: "worker-spawn-test",
@@ -47,7 +47,7 @@ async function run(): Promise<void> {
     canClose: false,
     tmuxSession: SESSION,
     workingDir: projectDir,
-    agentSideExtensionPath: agentSidePath,
+    teamAgentExtensionPath: teamAgentPath,
     agentsDirs: [],
   };
 
@@ -63,9 +63,7 @@ async function run(): Promise<void> {
   // Generate the config file and launch script
   const configPath = await writeAgentConfigFile(TMPDIR, "test", "worker-spawn-test", workerConfig);
   const scriptPath = await writeAgentLaunchScript(
-    TMPDIR, "test", "worker-spawn-test", workerDef,
-    configPath, agentSidePath,
-    "say hello, this is a spawn test",
+    TMPDIR, "test", "worker-spawn-test", workerDef, configPath,
   );
   const command = buildWorkerCommand(scriptPath);
 
@@ -80,8 +78,6 @@ async function run(): Promise<void> {
 
   assert.ok(scriptContent.includes("PI_TEAM_AGENT_CONFIG="), "script exports config var");
   assert.ok(scriptContent.includes("pi"), "script invokes pi");
-  assert.ok(scriptContent.includes("-p"), "script uses print mode for worker");
-  assert.ok(scriptContent.includes("Press Enter"), "script has stay-open for worker");
 
   // Create tmux session with a reasonable size and spawn the worker
   execSync(`tmux new-session -d -s ${SESSION} -n main -x 120 -y 40`);

@@ -113,17 +113,17 @@ export interface TeamSession {
 }
 
 // ---------------------------------------------------------------------------
-// Agent-side configuration (passed to spawned agents via environment)
+// Team-agent configuration (passed to spawned agents via environment)
 // ---------------------------------------------------------------------------
 
 /**
- * Configuration injected into each spawned agent process.
+ * Configuration injected into each spawned team-agent process.
  *
- * Passed as a JSON-encoded environment variable so the agent-side
- * extension knows which team it belongs to, what role it plays,
- * and where the queue file lives.
+ * Passed as the path to a JSON file via an environment variable so the
+ * team-agent extension knows which team it belongs to, what role it
+ * plays, and where the queue file lives.
  */
-export interface AgentSideConfig {
+export interface TeamAgentConfig {
   /** Team ID this agent belongs to. */
   teamId: string;
   /** High-level goal for the team (displayed in UI). */
@@ -142,13 +142,13 @@ export interface AgentSideConfig {
   tmuxSession: string;
   /** Working directory for spawned worker processes. */
   workingDir: string;
-  /** Absolute path to the agent-side extension file (for spawning workers). */
-  agentSideExtensionPath: string;
+  /** Absolute path to the team-agent extension entry point (for spawning workers). */
+  teamAgentExtensionPath: string;
   /** Directories to search for agent definitions, lowest priority first. */
   agentsDirs: string[];
   /** The agent's system prompt content (from the .md file body). Injected via before_agent_start. */
   agentSystemPrompt?: string;
 }
 
-/** Environment variable name for the agent-side config JSON. */
+/** Environment variable name for the team-agent config JSON. */
 export const AGENT_CONFIG_ENV_VAR = "PI_TEAM_AGENT_CONFIG";

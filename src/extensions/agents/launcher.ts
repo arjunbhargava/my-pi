@@ -22,7 +22,7 @@ import {
   sessionExists,
 } from "../../lib/tmux.js";
 import type { ExecContext, Result } from "../../lib/types.js";
-import type { AgentDefinition, AgentInstance, AgentSideConfig, TeamSession } from "./types.js";
+import type { AgentDefinition, AgentInstance, TeamAgentConfig, TeamSession } from "./types.js";
 import {
   AGENT_CONFIG_ENV_VAR,
   QUEUE_FILENAME_PREFIX,
@@ -70,7 +70,7 @@ export async function writeAgentConfigFile(
   baseDir: string,
   teamId: string,
   agentName: string,
-  config: AgentSideConfig,
+  config: TeamAgentConfig,
 ): Promise<string> {
   const configDir = path.join(baseDir, CONFIG_DIR_NAME);
   await mkdir(configDir, { recursive: true });
@@ -126,7 +126,7 @@ export async function writeAgentLaunchScript(
   }
   // Note: agentDef.tools is intentionally NOT passed as --tools.
   // The --tools flag acts as a whitelist that would filter out
-  // custom tools registered by the agent-side extension.
+  // custom tools registered by the team-agent extension.
   // Tool guidance comes from the agent's system prompt instead.
   // All agents run in interactive mode — no -p flag.
   // Task prompts are injected via tmux send-keys after pi starts.
@@ -173,7 +173,7 @@ export async function launchTeam(
   ctx: ExecContext,
   goal: string,
   permanentAgents: AgentDefinition[],
-  agentSideExtensionPath: string,
+  teamAgentExtensionPath: string,
   baseDir: string,
   workingDir: string,
   agentsDirs: string[],
@@ -211,7 +211,7 @@ export async function launchTeam(
 
   // Launch permanent agents
   for (const agentDef of permanentAgents) {
-    const agentConfig: AgentSideConfig = {
+    const agentConfig: TeamAgentConfig = {
       teamId,
       goal,
       agentName: agentDef.name,
@@ -221,7 +221,7 @@ export async function launchTeam(
       canClose: agentDef.name === "evaluator",
       tmuxSession,
       workingDir,
-      agentSideExtensionPath,
+      teamAgentExtensionPath,
       agentsDirs,
       agentSystemPrompt: agentDef.systemPrompt,
     };
@@ -290,9 +290,9 @@ export async function spawnWorker(
   workerDef: AgentDefinition,
   workerName: string,
   taskPrompt: string,
-  agentSideExtensionPath: string,
+  teamAgentExtensionPath: string,
 ): Promise<Result<AgentInstance>> {
-  const agentConfig: AgentSideConfig = {
+  const agentConfig: TeamAgentConfig = {
     teamId: team.teamId,
     goal: team.goal,
     agentName: workerName,
@@ -302,7 +302,7 @@ export async function spawnWorker(
     canClose: false,
     tmuxSession: team.tmuxSession,
     workingDir: team.workingDir,
-    agentSideExtensionPath,
+    teamAgentExtensionPath,
     agentsDirs: [],
     agentSystemPrompt: workerDef.systemPrompt,
   };

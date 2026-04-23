@@ -43,8 +43,8 @@ export interface AgentCommandState {
   repoRoot: string | null;
   /** Absolute path to the agents directory within the my-pi package. */
   packageAgentsDir: string;
-  /** Absolute path to the agent-side extension file. */
-  agentSideExtensionPath: string;
+  /** Absolute path to the team-agent extension entry point. */
+  teamAgentExtensionPath: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -122,7 +122,7 @@ export function registerAgentCommands(
         state.execCtx(state.repoRoot),
         goal,
         permanentAgents,
-        state.agentSideExtensionPath,
+        state.teamAgentExtensionPath,
         baseDir,
         workingDir,
         agentsDirs,

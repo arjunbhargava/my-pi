@@ -17,7 +17,7 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { getRepositoryRoot } from "../../lib/git.js";
 import type { ExecContext } from "../../lib/types.js";
 import { type AgentCommandState, registerAgentCommands } from "./commands.js";
-import agentSideExtension from "./agent-side.js";
+import teamAgentExtension from "./team-agent/index.js";
 import { AGENT_CONFIG_ENV_VAR } from "./types.js";
 import type { TeamSession } from "./types.js";
 
@@ -26,10 +26,10 @@ import type { TeamSession } from "./types.js";
 // ---------------------------------------------------------------------------
 
 export default function agentExtension(pi: ExtensionAPI): void {
-  // When running as a spawned team agent, delegate to agent-side setup
-  // (registers team tools instead of control-plane commands)
+  // When running as a spawned team agent, delegate to the team-agent
+  // extension, which registers team tools instead of control-plane commands.
   if (process.env[AGENT_CONFIG_ENV_VAR]) {
-    agentSideExtension(pi);
+    teamAgentExtension(pi);
     return;
   }
 
@@ -44,7 +44,7 @@ export default function agentExtension(pi: ExtensionAPI): void {
   }
   const packageRoot = path.resolve(extensionDir, "..", "..", "..");
   const packageAgentsDir = path.join(packageRoot, "agents");
-  const agentSideExtensionPath = path.join(extensionDir, "agent-side.ts");
+  const teamAgentExtensionPath = path.join(extensionDir, "team-agent", "index.ts");
 
   function execCtx(cwd: string): ExecContext {
     return { exec: (cmd, args, opts) => pi.exec(cmd, args, opts), cwd };
@@ -56,7 +56,7 @@ export default function agentExtension(pi: ExtensionAPI): void {
     execCtx,
     repoRoot: null,
     packageAgentsDir,
-    agentSideExtensionPath,
+    teamAgentExtensionPath,
   };
 
   // -----------------------------------------------------------------------
