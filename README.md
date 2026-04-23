@@ -18,12 +18,13 @@ Both flows share the same `lib/workspace.ts` primitive, the same commit-message 
 
 ### Multi-agent team (`/team-*` commands)
 
-1. **Launches a tmux session** with a live queue viewer, an orchestrator, and an evaluator.
+1. **Launches a tmux session** with a live queue viewer plus one window per permanent agent (orchestrator, evaluator, code reviewer).
 2. **Orchestrator** decomposes the goal into tasks and dispatches worker pi instances in fresh tmux windows, each with its own isolated worktree.
 3. **Workers** complete their task and auto-commit with description + result + file changes.
-4. **Evaluator** reviews and either closes (squash-merges into the target branch with a rich commit message) or rejects (requeues with feedback).
-5. **Rediscovers** running teams on pi restart so `/team-status`, `/team-stop`, and `/team-attach` keep working across sessions.
-6. **Auto-recovers dead workers** — a worker whose tmux window has vanished has its task requeued and its worktree cleaned up.
+4. **Evaluator** reviews each task and either closes (squash-merges into the target branch with a rich commit message) or rejects (requeues with feedback).
+5. **Code reviewer** watches the target branch as merges land and files follow-up tasks when the emerging codebase drifts, loses test coverage, or accumulates AI slop.
+6. **Rediscovers** running teams on pi restart so `/team-status`, `/team-stop`, and `/team-attach` keep working across sessions.
+7. **Auto-recovers dead workers** — a worker whose tmux window has vanished has its task requeued and its worktree cleaned up.
 
 ## Installation
 
@@ -139,6 +140,8 @@ Capabilities control which tool bundles get registered:
 - `dispatch` — can spawn workers and monitor their progress.
 - `close` — can approve and merge reviewed tasks.
 
+A permanent agent with no capabilities (like the code reviewer) gets just the all-agent queue tools: `read_queue`, `add_task`, `complete_task`, and `wait_for_merges`. That's enough to watch work land and advise the orchestrator via new tasks.
+
 ### During a team run
 
 The orchestrator adds tasks, dispatches workers (each gets its own worktree and branch under `<repo>-worktrees/team-<id>/worker-<name>/`), and monitors the queue via `fs.watch` (no polling). Dead workers are auto-detected via a 10-second heartbeat; tasks from dead windows are requeued.
@@ -188,6 +191,7 @@ If you quit pi while a team is running and come back later, you'll see `Reattach
 | `read_queue` | Summary of the task queue or details for one task |
 | `add_task` | Append a task to the queue |
 | `complete_task` | Mark the caller's active task ready for review; auto-commits with description + result + changes |
+| `wait_for_merges` | Block until the evaluator closes a new task (i.e., work has landed on the target branch) |
 
 ### Orchestrator only (capability: `dispatch`)
 
@@ -248,12 +252,13 @@ my-pi/
 │                   └── review.ts      # wait_for_reviews, close_task, reject_task (close cap)
 ├── agents/
 │   ├── roles/                         # Permanent agents (one window per team)
-│   │   ├── orchestrator.md
-│   │   └── evaluator.md
+│   │   ├── orchestrator.md            # capabilities: dispatch
+│   │   ├── evaluator.md               # capabilities: close
+│   │   └── code-reviewer.md           # capabilities: (none — reads + adds tasks)
 │   └── workers/                       # Ephemeral worker templates
-│       ├── implementer.md
-│       ├── scout.md
-│       └── researcher.md
+│       ├── implementer.md             # writes code, test-first
+│       ├── scout.md                   # reads and reports
+│       └── researcher.md              # runs experiments
 ├── skills/
 │   └── worktree-workflow/SKILL.md     # Teaches the agent worktree conventions
 ├── scripts/
