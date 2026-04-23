@@ -33,9 +33,6 @@ import {
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Delay (ms) before injecting initial prompts into permanent agent windows. */
-const INITIAL_PROMPT_DELAY_MS = 6000;
-
 /** Directory name for agent config files within the team base dir. */
 const CONFIG_DIR_NAME = ".team-configs";
 
@@ -89,8 +86,17 @@ export async function writeAgentConfigFile(
  * We use a script file instead of inline `bash -c` to avoid shell
  * escaping hell with nested quotes in tmux commands. The script:
  *   1. Exports the config env var
- *   2. Runs pi with the right flags
- *   3. For workers: keeps the window open on exit for debugging
+ *   2. Runs pi with the agent's model and an optional initial prompt
+ *      (passed as a positional argument — pi processes it as the
+ *      first user message, so no send-keys timing race is needed)
+ *
+ * System prompts are *not* passed via --append-system-prompt, which
+ * hangs in -p mode when an extension is loaded. The team-agent
+ * extension appends them via before_agent_start instead.
+ *
+ * Tools are *not* passed via --tools, which acts as a whitelist and
+ * would filter out the team-agent extension's custom tools. Tool
+ * guidance comes from the agent's system prompt instead.
  */
 export async function writeAgentLaunchScript(
   baseDir: string,
@@ -98,42 +104,28 @@ export async function writeAgentLaunchScript(
   agentName: string,
   agentDef: AgentDefinition,
   configPath: string,
+  initialPrompt?: string,
 ): Promise<string> {
   const configDir = path.join(baseDir, CONFIG_DIR_NAME);
   await mkdir(configDir, { recursive: true });
   const scriptPath = path.join(configDir, `${teamId}-${agentName}.sh`);
 
-  // Log file for diagnostics — lives next to the script
+  // Log file for diagnostics — lives next to the script.
   const logPath = scriptPath.replace(/\.sh$/, ".log");
+
+  const piInvocation = ["pi"];
+  if (agentDef.model) piInvocation.push("--model", sq(agentDef.model));
+  if (initialPrompt) piInvocation.push(sq(initialPrompt));
 
   const lines: string[] = [
     "#!/usr/bin/env bash",
     `LOGFILE=${sq(logPath)}`,
     `echo "[$(date)] Agent ${agentName} starting" >> "$LOGFILE"`,
     `export ${AGENT_CONFIG_ENV_VAR}=${sq(configPath)}`,
-    `echo "[$(date)] Config: $${AGENT_CONFIG_ENV_VAR}" >> "$LOGFILE"`,
     "",
+    piInvocation.join(" "),
+    `echo "[$(date)] pi exited with code $?" >> "$LOGFILE"`,
   ];
-
-  // System prompt is injected via the extension's before_agent_start hook
-  // (not --append-system-prompt, which causes hangs in -p mode with extensions).
-  const piArgs: string[] = [
-    "pi",
-  ];
-
-  if (agentDef.model) {
-    piArgs.push("--model", agentDef.model);
-  }
-  // Note: agentDef.tools is intentionally NOT passed as --tools.
-  // The --tools flag acts as a whitelist that would filter out
-  // custom tools registered by the team-agent extension.
-  // Tool guidance comes from the agent's system prompt instead.
-  // All agents run in interactive mode — no -p flag.
-  // Task prompts are injected via tmux send-keys after pi starts.
-  const piCommand = piArgs.join(" ");
-  lines.push(`echo "[$(date)] Running: ${piCommand.replace(/'/g, "")}" >> "$LOGFILE"`);
-  lines.push(piCommand);
-  lines.push(`echo "[$(date)] pi exited with code $?" >> "$LOGFILE"`);
 
   await writeFile(scriptPath, lines.join("\n") + "\n", { mode: 0o755 });
   return scriptPath;
@@ -167,7 +159,10 @@ export function buildWorkerCommand(
  *   1. A task queue file initialized with the goal
  *   2. Agent config files (one per permanent agent)
  *   3. A tmux session with a board window + one window per permanent agent
- *   4. Injects initial prompts after a delay
+ *
+ * Each agent receives its initial prompt as a positional arg to pi,
+ * so the first user turn starts as soon as pi's UI is ready — no
+ * send-keys race, no sleep timers.
  */
 export async function launchTeam(
   ctx: ExecContext,
@@ -184,18 +179,17 @@ export async function launchTeam(
   const tmuxSession = `${TEAM_TMUX_PREFIX}${slug}`;
   const queuePath = path.join(baseDir, `${QUEUE_FILENAME_PREFIX}${teamId}.json`);
 
-  // Check for existing session
   const exists = await sessionExists(ctx, tmuxSession);
   if (exists.ok && exists.value) {
     return { ok: false, error: `tmux session '${tmuxSession}' already exists. Use /team-stop first.` };
   }
 
-  // Initialize the queue file
+  // Initialize the queue file.
   const queue = createQueue(teamId, goal, targetBranch);
   const writeResult = await writeQueue(queuePath, queue);
   if (!writeResult.ok) return writeResult;
 
-  // Create tmux session with a live board viewer
+  // Create the tmux session with a live board viewer as the first window.
   const sessionResult = await createSession(ctx, tmuxSession, {
     windowName: "board",
     cwd: workingDir,
@@ -207,9 +201,9 @@ export async function launchTeam(
     `watch -n 2 'cat ${sq(queuePath)} | python3 -m json.tool 2>/dev/null || echo "Waiting for queue..."'`,
   );
 
+  const initialPrompt = buildPermanentAgentPrompt(goal);
   const agents: AgentInstance[] = [];
 
-  // Launch permanent agents
   for (const agentDef of permanentAgents) {
     const agentConfig: TeamAgentConfig = {
       teamId,
@@ -227,7 +221,7 @@ export async function launchTeam(
 
     const configPath = await writeAgentConfigFile(baseDir, teamId, agentDef.name, agentConfig);
     const scriptPath = await writeAgentLaunchScript(
-      baseDir, teamId, agentDef.name, agentDef, configPath,
+      baseDir, teamId, agentDef.name, agentDef, configPath, initialPrompt,
     );
     const command = buildAgentCommand(scriptPath);
 
@@ -235,7 +229,6 @@ export async function launchTeam(
       command,
       cwd: workingDir,
     });
-
     if (!windowResult.ok) {
       await killSession(ctx, tmuxSession);
       return windowResult;
@@ -250,90 +243,29 @@ export async function launchTeam(
     });
   }
 
-  const team: TeamSession = {
-    teamId,
-    goal,
-    tmuxSession,
-    queuePath,
-    repoRoot: ctx.cwd,
-    workingDir,
-    targetBranch,
-    agents,
-    createdAt: Date.now(),
-  };
-
-  // Give pi time to start, then inject initial prompts via send-keys.
-  // Single-line prompts to avoid editor issues.
-  setTimeout(async () => {
-    for (const agentDef of permanentAgents) {
-      const prompt = agentDef.name === "orchestrator"
-        ? `Your goal: ${goal}. Read the queue, plan tasks, dispatch workers, and monitor for completion.`
-        : "Use wait_for_reviews to wait for completed tasks, then review and close or reject them.";
-      await sendKeys(ctx, tmuxSession, agentDef.name, prompt);
-    }
-  }, INITIAL_PROMPT_DELAY_MS);
-
-  return { ok: true, value: team };
-}
-
-/** Delay (ms) before injecting a task prompt into a newly spawned worker. */
-const WORKER_PROMPT_DELAY_MS = 5000;
-
-/**
- * Spawn a worker as a full interactive pi session in a new tmux window.
- * The task prompt is injected via sendKeys after pi starts.
- */
-export async function spawnWorker(
-  ctx: ExecContext,
-  team: TeamSession,
-  workerDef: AgentDefinition,
-  workerName: string,
-  taskPrompt: string,
-  teamAgentExtensionPath: string,
-): Promise<Result<AgentInstance>> {
-  const agentConfig: TeamAgentConfig = {
-    teamId: team.teamId,
-    goal: team.goal,
-    agentName: workerName,
-    role: "worker",
-    queuePath: team.queuePath,
-    capabilities: [],
-    tmuxSession: team.tmuxSession,
-    workingDir: team.workingDir,
-    teamAgentExtensionPath,
-    agentsDirs: [],
-    agentSystemPrompt: workerDef.systemPrompt,
-  };
-
-  const baseDir = path.dirname(team.queuePath);
-  const configPath = await writeAgentConfigFile(baseDir, team.teamId, workerName, agentConfig);
-  const scriptPath = await writeAgentLaunchScript(
-    baseDir, team.teamId, workerName, workerDef, configPath,
-  );
-  const command = buildWorkerCommand(scriptPath);
-
-  const windowResult = await createWindow(ctx, team.tmuxSession, workerName, {
-    command,
-    cwd: team.workingDir,
-  });
-
-  if (!windowResult.ok) return windowResult;
-
-  // Inject the task prompt after pi has time to start
-  setTimeout(async () => {
-    await sendKeys(ctx, team.tmuxSession, workerName, taskPrompt);
-  }, WORKER_PROMPT_DELAY_MS);
-
   return {
     ok: true,
     value: {
-      name: workerName,
-      role: "worker",
-      definitionName: workerDef.name,
-      tmuxWindow: workerName,
-      status: "running",
+      teamId,
+      goal,
+      tmuxSession,
+      queuePath,
+      repoRoot: ctx.cwd,
+      workingDir,
+      targetBranch,
+      agents,
+      createdAt: Date.now(),
     },
   };
+}
+
+/**
+ * The initial message sent to every permanent agent on startup.
+ * Agents know their role-specific workflow from their system prompt,
+ * so the initial prompt is deliberately uniform — just the goal.
+ */
+function buildPermanentAgentPrompt(goal: string): string {
+  return `Team goal: ${goal}. Begin per your role's workflow.`;
 }
 
 /**

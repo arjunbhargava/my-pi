@@ -18,7 +18,7 @@ import {
   readQueue,
   recoverTask,
 } from "../../../../lib/task-queue.js";
-import { capturePane, createWindow, sendKeys } from "../../../../lib/tmux.js";
+import { capturePane, createWindow } from "../../../../lib/tmux.js";
 import type { TaskQueue } from "../../../../lib/types.js";
 import { discoverAgentsFromDirs } from "../../agent-config.js";
 import {
@@ -32,9 +32,6 @@ import type { TeamAgentRuntime } from "../runtime.js";
 
 /** Default worker agent type when dispatch_task is called without one. */
 const DEFAULT_WORKER_TYPE = "implementer";
-
-/** How long to wait after spawning a worker before typing its task prompt. */
-const WORKER_PROMPT_DELAY_MS = 5000;
 
 /** Default timeouts (seconds) for the two polling tools. */
 const MONITOR_DEFAULT_TIMEOUT_SEC = 120;
@@ -152,14 +149,18 @@ async function handleDispatch(
     agentSystemPrompt: workerDef.systemPrompt,
   };
 
+  const taskPrompt = [
+    `You are ${workerName}. Your assigned task ID is: ${taskId}.`,
+    "Use read_queue to get your task details, then do the work, then use complete_task when done.",
+  ].join(" ");
+
   const configPath = await writeAgentConfigFile(baseDir, config.teamId, workerName, workerConfig);
   const scriptPath = await writeAgentLaunchScript(
-    baseDir, config.teamId, workerName, workerDef, configPath,
+    baseDir, config.teamId, workerName, workerDef, configPath, taskPrompt,
   );
   const command = buildWorkerCommand(scriptPath);
-  const tmuxExec = runtime.tmuxExec();
 
-  const windowResult = await createWindow(tmuxExec, config.tmuxSession, workerName, {
+  const windowResult = await createWindow(runtime.tmuxExec(), config.tmuxSession, workerName, {
     command,
     cwd: workerWorktreePath,
   });
@@ -167,15 +168,6 @@ async function handleDispatch(
     await runtime.cleanupWorkerGit(workerWorktreePath, workerBranch);
     throw new Error(`Failed to spawn worker tmux window: ${windowResult.error}`);
   }
-
-  // Inject the task prompt after pi has had time to start.
-  const taskPrompt = [
-    `You are ${workerName}. Your assigned task ID is: ${taskId}.`,
-    "Use read_queue to get your task details, then do the work, then use complete_task when done.",
-  ].join(" ");
-  setTimeout(() => {
-    void sendKeys(tmuxExec, config.tmuxSession, workerName, taskPrompt);
-  }, WORKER_PROMPT_DELAY_MS);
 
   return {
     content: [{
