@@ -53,7 +53,7 @@ const tests: Array<{ name: string; fn: () => Promise<void> }> = [];
 // ---------------------------------------------------------------------------
 
 test("createQueue produces valid empty queue", async () => {
-  const q = createQueue("team-1", "Build auth");
+  const q = createQueue("team-1", "Build auth", "main", "pi-team-test");
   assert.equal(q.teamId, "team-1");
   assert.equal(q.goal, "Build auth");
   assert.equal(q.tasks.length, 0);
@@ -63,7 +63,7 @@ test("createQueue produces valid empty queue", async () => {
 
 test("write and read roundtrip", async () => {
   const queuePath = await setup();
-  const q = createQueue("team-2", "Test roundtrip");
+  const q = createQueue("team-2", "Test roundtrip", "main", "pi-team-test");
   addTask(q, "First task", "Do something", "orchestrator");
 
   const writeResult = await writeQueue(queuePath, q);
@@ -85,7 +85,7 @@ test("read nonexistent file returns error", async () => {
 });
 
 test("addTask appends to end", async () => {
-  const q = createQueue("t", "g");
+  const q = createQueue("t", "g", "main", "pi-team-test");
   addTask(q, "Task A", "desc", "orch");
   addTask(q, "Task B", "desc", "orch");
   addTask(q, "Task C", "desc", "orch");
@@ -97,7 +97,7 @@ test("addTask appends to end", async () => {
 });
 
 test("dispatchTask transitions queued → active", async () => {
-  const q = createQueue("t", "g");
+  const q = createQueue("t", "g", "main", "pi-team-test");
   const task = addTask(q, "Implement", "do it", "orch");
 
   const result = dispatchTask(q, task.id, "worker-1", "orch");
@@ -110,7 +110,7 @@ test("dispatchTask transitions queued → active", async () => {
 });
 
 test("dispatchTask rejects non-queued task", async () => {
-  const q = createQueue("t", "g");
+  const q = createQueue("t", "g", "main", "pi-team-test");
   const task = addTask(q, "Implement", "do it", "orch");
   dispatchTask(q, task.id, "worker-1", "orch");
 
@@ -120,7 +120,7 @@ test("dispatchTask rejects non-queued task", async () => {
 });
 
 test("completeTask transitions active → review", async () => {
-  const q = createQueue("t", "g");
+  const q = createQueue("t", "g", "main", "pi-team-test");
   const task = addTask(q, "Implement", "do it", "orch");
   dispatchTask(q, task.id, "worker-1", "orch");
 
@@ -133,7 +133,7 @@ test("completeTask transitions active → review", async () => {
 });
 
 test("closeTask archives and removes from active tasks", async () => {
-  const q = createQueue("t", "g");
+  const q = createQueue("t", "g", "main", "pi-team-test");
   const task = addTask(q, "Implement", "do it", "orch");
   dispatchTask(q, task.id, "worker-1", "orch");
   completeTask(q, task.id, "Done", "worker-1");
@@ -149,7 +149,7 @@ test("closeTask archives and removes from active tasks", async () => {
 });
 
 test("rejectTask requeues at top with feedback", async () => {
-  const q = createQueue("t", "g");
+  const q = createQueue("t", "g", "main", "pi-team-test");
   addTask(q, "Task A", "first", "orch");
   const taskB = addTask(q, "Task B", "second", "orch");
   addTask(q, "Task C", "third", "orch");
@@ -172,7 +172,7 @@ test("rejectTask requeues at top with feedback", async () => {
 });
 
 test("rejectTask preserves attempt count", async () => {
-  const q = createQueue("t", "g");
+  const q = createQueue("t", "g", "main", "pi-team-test");
   const task = addTask(q, "Tricky task", "desc", "orch");
 
   // First attempt
@@ -191,7 +191,7 @@ test("rejectTask preserves attempt count", async () => {
 });
 
 test("getNextQueuedTask returns first queued task", async () => {
-  const q = createQueue("t", "g");
+  const q = createQueue("t", "g", "main", "pi-team-test");
   const taskA = addTask(q, "A", "desc", "orch");
   addTask(q, "B", "desc", "orch");
   dispatchTask(q, taskA.id, "worker-1", "orch"); // A is now active
@@ -202,7 +202,7 @@ test("getNextQueuedTask returns first queued task", async () => {
 });
 
 test("getTasksByStatus filters correctly", async () => {
-  const q = createQueue("t", "g");
+  const q = createQueue("t", "g", "main", "pi-team-test");
   const t1 = addTask(q, "A", "d", "o");
   addTask(q, "B", "d", "o");
   addTask(q, "C", "d", "o");
@@ -214,7 +214,7 @@ test("getTasksByStatus filters correctly", async () => {
 });
 
 test("getQueueSummary produces readable output", async () => {
-  const q = createQueue("t", "Build auth");
+  const q = createQueue("t", "Build auth", "main", "pi-team-test");
   addTask(q, "Implement JWT", "desc", "orch");
   const t2 = addTask(q, "Write tests", "desc", "orch");
   dispatchTask(q, t2.id, "worker-1", "orch");
@@ -228,7 +228,7 @@ test("getQueueSummary produces readable output", async () => {
 });
 
 test("recoverTask moves active task back to queued without incrementing attempts", async () => {
-  const q = createQueue("t", "g");
+  const q = createQueue("t", "g", "main", "pi-team-test");
   const task = addTask(q, "Fragile task", "desc", "orch");
   dispatchTask(q, task.id, "worker-1", "orch");
 
@@ -248,7 +248,7 @@ test("recoverTask moves active task back to queued without incrementing attempts
 });
 
 test("recoverTask rejects non-active task", async () => {
-  const q = createQueue("t", "g");
+  const q = createQueue("t", "g", "main", "pi-team-test");
   const task = addTask(q, "Not active", "desc", "orch");
 
   const result = recoverTask(q, task.id, "reason", "orch");
@@ -256,7 +256,7 @@ test("recoverTask rejects non-active task", async () => {
 });
 
 test("log is capped at limit", async () => {
-  const q = createQueue("t", "g");
+  const q = createQueue("t", "g", "main", "pi-team-test");
   // Add 60 tasks — each addTask appends a log entry
   for (let i = 0; i < 60; i++) {
     addTask(q, `Task ${i}`, "d", "o");

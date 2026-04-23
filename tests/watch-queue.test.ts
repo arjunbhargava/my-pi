@@ -22,7 +22,7 @@ let queuePath: string;
 async function setup(): Promise<void> {
   tmpDir = await mkdtemp(path.join(tmpdir(), "watch-queue-test-"));
   queuePath = path.join(tmpDir, ".team-test.json");
-  const queue = createQueue("test", "test goal", "main");
+  const queue = createQueue("test", "test goal", "main", "pi-team-test");
   await writeQueue(queuePath, queue);
 }
 
@@ -42,7 +42,7 @@ const test = (name: string, fn: () => Promise<void>): void => {
 test("resolves immediately when predicate is satisfied on first read", async () => {
   await setup();
   try {
-    const queue = createQueue("test", "test", "main");
+    const queue = createQueue("test", "test", "main", "pi-team-test");
     addTask(queue, "already here", "already here", "tester");
     await writeQueue(queuePath, queue);
 
@@ -69,7 +69,7 @@ test("wakes on queue write and resolves via fs.watch", async () => {
     // Fire a write 100ms from now; the watcher should catch it.
     setTimeout(() => {
       void (async () => {
-        const queue = createQueue("test", "test", "main");
+        const queue = createQueue("test", "test", "main", "pi-team-test");
         addTask(queue, "arrived", "arrived", "tester");
         await writeQueue(queuePath, queue);
       })();
@@ -161,7 +161,7 @@ test("skips when file read fails but recovers on next wake", async () => {
 
     const writeTimer = setTimeout(() => {
       void (async () => {
-        const queue = createQueue("test", "test", "main");
+        const queue = createQueue("test", "test", "main", "pi-team-test");
         addTask(queue, "now readable", "now readable", "tester");
         await writeQueue(queuePath, queue);
       })();
@@ -194,7 +194,7 @@ test("does not lose wakes that arrive during handler execution", async () => {
 
     const writeTimer = setTimeout(() => {
       void (async () => {
-        const queue = createQueue("test", "test", "main");
+        const queue = createQueue("test", "test", "main", "pi-team-test");
         addTask(queue, "mid-handler", "mid-handler", "tester");
         await writeQueue(queuePath, queue);
       })();

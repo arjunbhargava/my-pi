@@ -215,8 +215,10 @@ export async function launchTeam(
     return { ok: false, error: `tmux session '${tmuxSession}' already exists. Use /team-stop first.` };
   }
 
-  // Initialize the queue file.
-  const queue = createQueue(teamId, goal, targetBranch);
+  // Initialize the queue file. The tmux session name is embedded so a
+  // future pi process can pair the queue with its live session during
+  // rediscovery without having to re-derive the slug.
+  const queue = createQueue(teamId, goal, targetBranch, tmuxSession);
   const writeResult = await writeQueue(queuePath, queue);
   if (!writeResult.ok) return writeResult;
 

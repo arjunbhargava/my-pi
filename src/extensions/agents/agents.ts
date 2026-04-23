@@ -17,6 +17,7 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { getRepositoryRoot } from "../../lib/git.js";
 import type { ExecContext } from "../../lib/types.js";
 import { type AgentCommandState, registerAgentCommands } from "./commands.js";
+import { rediscoverTeams } from "./discovery.js";
 import teamAgentExtension from "./team-agent/index.js";
 import { AGENT_CONFIG_ENV_VAR } from "./types.js";
 import type { TeamSession } from "./types.js";
@@ -65,11 +66,32 @@ export default function agentExtension(pi: ExtensionAPI): void {
 
   pi.on("session_start", async (_event, ctx) => {
     const rootResult = await getRepositoryRoot(execCtx(ctx.cwd));
-    if (rootResult.ok) {
-      commandState.repoRoot = rootResult.value;
+    if (!rootResult.ok) return;
+
+    commandState.repoRoot = rootResult.value;
+
+    // Reattach to any teams whose tmux sessions are still alive.
+    const baseDir = `${rootResult.value}-worktrees`;
+    const { live, stale } = await rediscoverTeams(
+      execCtx(rootResult.value),
+      baseDir,
+      rootResult.value,
+      rootResult.value,
+    );
+
+    for (const team of live) {
+      commandState.activeTeams.set(team.teamId, team);
     }
 
-    // Show team status if any teams are tracked
+    if (live.length > 0) {
+      const names = live.map((t) => t.goal).join(", ");
+      ctx.ui.notify(
+        `Reattached to ${live.length} running team(s): ${names}.`
+        + (stale.length > 0 ? ` (${stale.length} crashed queue file(s) remain.)` : ""),
+        "info",
+      );
+    }
+
     if (commandState.activeTeams.size > 0) {
       const names = Array.from(commandState.activeTeams.values()).map((t) => t.goal);
       ctx.ui.setStatus("team-ctrl", `[teams: ${names.join(", ")}]`);

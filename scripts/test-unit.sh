@@ -26,4 +26,8 @@ echo "--- workspace ---"
 npx tsx "$PROJECT_DIR/tests/workspace.test.ts"
 echo ""
 
+echo "--- rediscover-teams ---"
+npx tsx "$PROJECT_DIR/tests/rediscover-teams.test.ts"
+echo ""
+
 echo "=== All unit tests passed ==="

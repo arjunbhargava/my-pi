@@ -169,6 +169,8 @@ export interface TaskQueue {
   goal: string;
   /** Branch that completed work merges into. Detected at team creation. */
   targetBranch: string;
+  /** tmux session name hosting this team. Used by rediscovery to pair a queue with its live tmux session on pi restart. */
+  tmuxSession: string;
   /** Unix timestamp (ms) when the team was created. */
   createdAt: number;
   /** Unix timestamp (ms) of the last queue mutation. */

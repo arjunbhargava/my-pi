@@ -100,12 +100,18 @@ export async function writeQueue(
 // ---------------------------------------------------------------------------
 
 /** Create a fresh empty queue for a new team session. */
-export function createQueue(teamId: string, goal: string, targetBranch: string): TaskQueue {
+export function createQueue(
+  teamId: string,
+  goal: string,
+  targetBranch: string,
+  tmuxSession: string,
+): TaskQueue {
   const now = Date.now();
   return {
     teamId,
     goal,
     targetBranch,
+    tmuxSession,
     createdAt: now,
     updatedAt: now,
     tasks: [],

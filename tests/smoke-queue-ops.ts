@@ -25,7 +25,7 @@ if (!queuePath) {
 
 async function main(): Promise<void> {
   // Create and write
-  const q = createQueue("smoke", "Smoke test");
+  const q = createQueue("smoke", "Smoke test", "main", "pi-team-smoke");
   const t1 = addTask(q, "Find files", "Use find to locate ts files", "orchestrator");
   addTask(q, "Implement feature", "Add a new function", "orchestrator");
 
