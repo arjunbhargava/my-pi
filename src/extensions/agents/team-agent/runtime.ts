@@ -11,11 +11,6 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
 import {
-  deleteBranch,
-  worktreePrune,
-  worktreeRemove,
-} from "../../../lib/git.js";
-import {
   readQueue,
   writeQueue,
 } from "../../../lib/task-queue.js";
@@ -25,6 +20,7 @@ import type {
   GitContext,
   TaskQueue,
 } from "../../../lib/types.js";
+import { destroyWorkspace } from "../../../lib/workspace.js";
 import type { TeamAgentConfig } from "../types.js";
 
 /**
@@ -97,10 +93,7 @@ export function createRuntime(pi: ExtensionAPI, config: TeamAgentConfig): TeamAg
     },
 
     async cleanupWorkerGit(worktreePath, branchName) {
-      const git = repoGit();
-      await worktreePrune(git);
-      await worktreeRemove(git, worktreePath);
-      await deleteBranch(git, branchName);
+      await destroyWorkspace(repoGit(), { worktreePath, branchName });
     },
   };
 }

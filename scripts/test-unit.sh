@@ -22,4 +22,8 @@ echo "--- watch-queue ---"
 npx tsx "$PROJECT_DIR/tests/watch-queue.test.ts"
 echo ""
 
+echo "--- workspace ---"
+npx tsx "$PROJECT_DIR/tests/workspace.test.ts"
+echo ""
+
 echo "=== All unit tests passed ==="

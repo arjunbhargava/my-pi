@@ -3,16 +3,14 @@
  */
 
 import {
-  commit,
   type DiffFileEntry,
   diffNameStatus,
   diffSummary,
   getMainBranch,
-  mergeSquash,
 } from "../../lib/git.js";
 import type { GitContext, Result } from "../../lib/types.js";
+import { destroyWorkspace, squashMergeWorkspace } from "../../lib/workspace.js";
 import { summarizePrompt } from "./checkpoint.js";
-import { removeTask } from "./manager.js";
 import type { TaskState } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -89,17 +87,14 @@ function buildSquashMessage(
 // ---------------------------------------------------------------------------
 
 /**
- * Accept a task by squash-merging its branch into main.
- *
- * 1. Squash-merge the task branch into the main worktree.
- * 2. Commit with the provided summary.
- * 3. Remove the task's worktree and branch.
- *
- * Returns the SHA of the merge commit on main.
+ * Accept a task by squash-merging its branch into main and tearing
+ * down its workspace. Returns the SHA of the merge commit on main,
+ * or `"no-op"` if the task produced no net changes.
  *
  * @param mainCtx - Git context pointing at the **main** worktree.
  * @param task    - The task to accept.
- * @param summary - Commit message for the squash-merge on main.
+ * @param summary - First line of the squash commit message; a file
+ *                  summary and the task's prompt history are appended.
  */
 export async function acceptTask(
   mainCtx: GitContext,
@@ -109,24 +104,25 @@ export async function acceptTask(
   const mainBranch = await getMainBranch(mainCtx);
   if (!mainBranch.ok) return mainBranch;
 
-  // Capture file-level changes before squash-merging
+  // Capture file-level changes up front so the commit message reflects
+  // the workspace contents even though the merge will overwrite them.
   const fileChanges = await diffNameStatus(mainCtx, mainBranch.value, task.branchName);
   const changes = fileChanges.ok ? fileChanges.value : [];
+  const commitMessage = buildSquashMessage(task, summary, changes);
 
-  const merge = await mergeSquash(mainCtx, task.branchName);
-  if (!merge.ok) return merge;
+  const mergeResult = await squashMergeWorkspace(
+    mainCtx,
+    { worktreePath: task.worktreePath, branchName: task.branchName, baseBranch: mainBranch.value },
+    { commitMessage },
+  );
+  if (!mergeResult.ok) return mergeResult;
 
-  const fullMessage = buildSquashMessage(task, summary, changes);
-  const commitResult = await commit(mainCtx, fullMessage);
-  if (!commitResult.ok) return commitResult;
+  // Teardown is best-effort: merge already landed, so report success
+  // regardless of whether the workspace cleanup had a hiccup.
+  await destroyWorkspace(mainCtx, task);
 
-  const cleanup = await removeTask(mainCtx, task);
-  if (!cleanup.ok) {
-    // Merge succeeded but cleanup failed — warn but return the SHA
-    return { ok: true, value: commitResult.value };
-  }
-
-  return { ok: true, value: commitResult.value };
+  const merged = mergeResult.value;
+  return { ok: true, value: merged.kind === "merged" ? merged.commitSha : "no-op" };
 }
 
 /**
@@ -139,7 +135,7 @@ export async function rejectTask(
   mainCtx: GitContext,
   task: TaskState,
 ): Promise<Result<void>> {
-  return removeTask(mainCtx, task);
+  return destroyWorkspace(mainCtx, task);
 }
 
 /**

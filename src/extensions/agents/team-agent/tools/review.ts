@@ -10,16 +10,6 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 
 import {
-  abortMerge,
-  commit,
-  getCurrentBranch,
-  getMergeConflicts,
-  hasUncommittedChanges,
-  mergeBranch,
-  mergeSquash,
-  resetHard,
-} from "../../../../lib/git.js";
-import {
   closeTask,
   getQueueSummary,
   getTaskById,
@@ -27,7 +17,7 @@ import {
   readQueue,
   rejectTask,
 } from "../../../../lib/task-queue.js";
-import type { TaskQueue } from "../../../../lib/types.js";
+import { destroyWorkspace, squashMergeWorkspace } from "../../../../lib/workspace.js";
 import type { TeamAgentRuntime } from "../runtime.js";
 import { watchQueueUntil } from "../watch.js";
 
@@ -162,18 +152,38 @@ async function handleClose(runtime: TeamAgentRuntime, taskId: string) {
 
   const workerName = task.assignedTo;
 
-  if (task.branchName) {
-    await mergeIntoTarget(runtime, queue, task.branchName, task.worktreePath, task.title);
-    if (task.worktreePath) {
-      await runtime.cleanupWorkerGit(task.worktreePath, task.branchName);
+  if (task.branchName && task.worktreePath) {
+    // Stop the worker BEFORE touching its worktree: destroyWorkspace
+    // removes the cwd out from under a live process, which is safe
+    // but needlessly rude. The merge has already captured the work.
+    const mergeResult = await squashMergeWorkspace(
+      runtime.repoGit(),
+      {
+        worktreePath: task.worktreePath,
+        branchName: task.branchName,
+        baseBranch: queue.targetBranch,
+      },
+      {
+        commitMessage: `feat: ${task.title}`,
+        retryAfterRebase: true,
+        workspaceGit: runtime.worktreeGit(task.worktreePath),
+      },
+    );
+    if (!mergeResult.ok) {
+      throw new Error(
+        `${mergeResult.error} Use reject_task with feedback so a new worker can resolve the issue.`,
+      );
     }
+
+    if (workerName) await runtime.killWorkerWindow(workerName);
+    await destroyWorkspace(runtime.repoGit(), task as { worktreePath: string; branchName: string });
+  } else if (workerName) {
+    await runtime.killWorkerWindow(workerName);
   }
 
   const result = closeTask(queue, taskId, runtime.agentName);
   if (!result.ok) throw new Error(result.error);
   await runtime.saveQueue(queue);
-
-  if (workerName) await runtime.killWorkerWindow(workerName);
 
   return {
     content: [{
@@ -182,85 +192,6 @@ async function handleClose(runtime: TeamAgentRuntime, taskId: string) {
     }],
     details: {},
   };
-}
-
-/**
- * Squash-merge the worker's branch into the target branch.
- *
- * Strategy:
- *   1. Direct squash merge.
- *   2. If it conflicts, update the worker's branch from target and retry.
- *   3. If the update itself conflicts, abort and throw — the evaluator
- *      should reject_task with feedback so a new worker can resolve it.
- *
- * On success, commits the merge as `feat: <title>`.
- */
-async function mergeIntoTarget(
-  runtime: TeamAgentRuntime,
-  queue: TaskQueue,
-  branchName: string,
-  worktreePath: string | undefined,
-  title: string,
-): Promise<void> {
-  const repoGit = runtime.repoGit();
-
-  const currentBranch = await getCurrentBranch(repoGit);
-  if (!currentBranch.ok || currentBranch.value !== queue.targetBranch) {
-    throw new Error(
-      `Expected target branch '${queue.targetBranch}' but repo is on `
-      + `'${currentBranch.ok ? currentBranch.value : "unknown"}'. Cannot merge.`,
-    );
-  }
-
-  // Attempt 1: direct squash merge.
-  const directMerge = await mergeSquash(repoGit, branchName);
-  if (directMerge.ok) {
-    await commitMergeIfDirty(runtime, title);
-    return;
-  }
-
-  // The failed merge left the index dirty; reset before trying again.
-  await resetHard(repoGit);
-
-  if (!worktreePath) {
-    throw new Error(
-      `Could not merge worker branch into '${queue.targetBranch}'. `
-      + `Use reject_task with feedback so a new worker can resolve the issue.`,
-    );
-  }
-
-  // Attempt 2: update the worker's branch from target, then retry squash.
-  const workerGit = runtime.worktreeGit(worktreePath);
-  const updateResult = await mergeBranch(workerGit, queue.targetBranch);
-  if (!updateResult.ok) {
-    const conflicts = await getMergeConflicts(workerGit);
-    await abortMerge(workerGit);
-    const files = conflicts.ok ? conflicts.value.join(", ") : "unknown files";
-    throw new Error(
-      `Merge conflicts on: ${files}. Auto-rebase failed. `
-      + `Use reject_task with feedback describing the conflicts so a new worker can resolve them.`,
-    );
-  }
-
-  const retryMerge = await mergeSquash(repoGit, branchName);
-  if (!retryMerge.ok) {
-    await resetHard(repoGit);
-    throw new Error(
-      `Could not merge worker branch into '${queue.targetBranch}' even after update. `
-      + `Use reject_task with feedback so a new worker can resolve the issue.`,
-    );
-  }
-
-  await commitMergeIfDirty(runtime, title);
-}
-
-/** Commit a squash-merged tree if any changes are staged. */
-async function commitMergeIfDirty(runtime: TeamAgentRuntime, title: string): Promise<void> {
-  const repoGit = runtime.repoGit();
-  const dirty = await hasUncommittedChanges(repoGit);
-  if (!dirty.ok || !dirty.value) return;
-  const result = await commit(repoGit, `feat: ${title}`);
-  if (!result.ok) throw new Error(`Merge commit failed: ${result.error}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -272,15 +203,20 @@ async function handleReject(runtime: TeamAgentRuntime, taskId: string, feedback:
   const task = getTaskById(queue, taskId);
   const workerName = task?.assignedTo;
 
+  // Kill the worker first so destroying its worktree doesn't yank the
+  // cwd out from under a still-running process.
+  if (workerName) await runtime.killWorkerWindow(workerName);
+
   if (task?.worktreePath && task.branchName) {
-    await runtime.cleanupWorkerGit(task.worktreePath, task.branchName);
+    await destroyWorkspace(runtime.repoGit(), {
+      worktreePath: task.worktreePath,
+      branchName: task.branchName,
+    });
   }
 
   const result = rejectTask(queue, taskId, feedback, runtime.agentName);
   if (!result.ok) throw new Error(result.error);
   await runtime.saveQueue(queue);
-
-  if (workerName) await runtime.killWorkerWindow(workerName);
 
   return {
     content: [{

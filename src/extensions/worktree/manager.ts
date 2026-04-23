@@ -11,17 +11,13 @@ import * as path from "node:path";
 
 import {
   branchExists,
-  createBranch,
-  deleteBranch,
   getMainBranch,
   getRepositoryRoot,
   mergeBranch,
-  worktreeAdd,
   worktreeList,
-  worktreePrune,
-  worktreeRemove,
 } from "../../lib/git.js";
 import type { GitContext, Result } from "../../lib/types.js";
+import { createWorkspace, destroyWorkspace } from "../../lib/workspace.js";
 import {
   type HarnessState,
   MAX_SLUG_LENGTH,
@@ -99,20 +95,15 @@ export async function createTask(
     return { ok: false, error: `Branch '${branchName}' already exists. Use a different description.` };
   }
 
-  // Create the branch at the tip of main
-  const branchResult = await createBranch(ctx, branchName, mainBranch.value);
-  if (!branchResult.ok) return branchResult;
-
-  // Set up the worktree directory
   const baseDir = getWorktreeBaseDir(repoRoot.value);
   const worktreePath = path.join(baseDir, slug);
 
-  const addResult = await worktreeAdd(ctx, worktreePath, branchName);
-  if (!addResult.ok) {
-    // Roll back the branch if worktree creation failed
-    await deleteBranch(ctx, branchName);
-    return addResult;
-  }
+  const workspaceResult = await createWorkspace(ctx, {
+    worktreePath,
+    branchName,
+    baseBranch: mainBranch.value,
+  });
+  if (!workspaceResult.ok) return workspaceResult;
 
   const task: TaskState = {
     id: generateTaskId(),
@@ -130,22 +121,11 @@ export async function createTask(
 /**
  * Remove a task's worktree and branch.
  *
- * Prunes stale worktree metadata first so git doesn't complain
- * about already-deleted directories.
- *
  * @param ctx  - Git context pointing at the **main** worktree.
  * @param task - The task to clean up.
  */
 export async function removeTask(ctx: GitContext, task: TaskState): Promise<Result<void>> {
-  await worktreePrune(ctx);
-
-  const removeResult = await worktreeRemove(ctx, task.worktreePath);
-  if (!removeResult.ok) return removeResult;
-
-  const branchResult = await deleteBranch(ctx, task.branchName);
-  if (!branchResult.ok) return branchResult;
-
-  return { ok: true, value: undefined };
+  return destroyWorkspace(ctx, task);
 }
 
 /** Look up the currently active task, or null if none. */

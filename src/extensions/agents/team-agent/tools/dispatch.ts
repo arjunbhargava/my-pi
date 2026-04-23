@@ -10,7 +10,6 @@ import * as path from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 
-import { createBranch, deleteBranch, worktreeAdd } from "../../../../lib/git.js";
 import {
   dispatchTask,
   getQueueSummary,
@@ -20,6 +19,7 @@ import {
 } from "../../../../lib/task-queue.js";
 import { capturePane } from "../../../../lib/tmux.js";
 import type { Task, TaskQueue, TaskStatus } from "../../../../lib/types.js";
+import { createWorkspace } from "../../../../lib/workspace.js";
 import { discoverAgentsFromDirs } from "../../agent-config.js";
 import { spawnAgentWindow } from "../../launcher.js";
 import type { TeamAgentConfig } from "../../types.js";
@@ -117,15 +117,13 @@ async function handleDispatch(
   const workerBranch = `team/${config.teamId}/${workerName}`;
   const workerWorktreePath = path.join(baseDir, `team-${config.teamId}`, workerName);
 
-  // Create the worker's isolated branch + worktree. Roll back on any failure.
-  const repoGit = runtime.repoGit();
-  const branchResult = await createBranch(repoGit, workerBranch, queue.targetBranch);
-  if (!branchResult.ok) throw new Error(`Failed to create worker branch: ${branchResult.error}`);
-
-  const wtResult = await worktreeAdd(repoGit, workerWorktreePath, workerBranch);
-  if (!wtResult.ok) {
-    await deleteBranch(repoGit, workerBranch);
-    throw new Error(`Failed to create worker worktree: ${wtResult.error}`);
+  const workspaceResult = await createWorkspace(runtime.repoGit(), {
+    worktreePath: workerWorktreePath,
+    branchName: workerBranch,
+    baseBranch: queue.targetBranch,
+  });
+  if (!workspaceResult.ok) {
+    throw new Error(`Failed to create worker workspace: ${workspaceResult.error}`);
   }
 
   const dispatched = dispatchTask(queue, taskId, workerName, agentName, {
