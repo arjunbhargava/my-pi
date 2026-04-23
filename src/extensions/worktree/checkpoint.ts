@@ -7,7 +7,16 @@
  * previous checkpoint (or the branch point from main).
  */
 
-import { commit, hasUncommittedChanges, stageAll } from "../../lib/git.js";
+import {
+  commit,
+  diffStaged,
+  hasUncommittedChanges,
+  stageAll,
+} from "../../lib/git.js";
+import {
+  composeCommitMessage,
+  formatFileChanges,
+} from "../../lib/commit-message.js";
 import type { GitContext, Result } from "../../lib/types.js";
 import { CHECKPOINT_PREFIX, type CheckpointRecord } from "./types.js";
 
@@ -40,15 +49,6 @@ export function summarizePrompt(rawPrompt: string): string {
   return summary.replace(/\.$/, "");
 }
 
-/**
- * Build a full commit message with a subject line and the original
- * prompt preserved in the body for traceability.
- */
-function formatCommitMessage(description: string): string {
-  const subject = `${CHECKPOINT_PREFIX} ${summarizePrompt(description)}`;
-  return `${subject}\n\nOriginal prompt:\n${description.trim()}`;
-}
-
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -56,10 +56,14 @@ function formatCommitMessage(description: string): string {
 /**
  * Stage all changes in the worktree and commit them as a checkpoint.
  *
+ * The commit message carries both the original prompt (for traceability)
+ * and the list of files touched, so `git log` of the task branch reads
+ * like a timeline of (prompt, effect) pairs.
+ *
  * Returns `null` inside the Result if there are no changes to commit
  * (this is not an error — it just means the agent didn't modify files).
  *
- * @param ctx      - Git context pointing at the task worktree.
+ * @param ctx         - Git context pointing at the task worktree.
  * @param description - Human-readable description (typically the user's prompt).
  */
 export async function createCheckpoint(
@@ -68,23 +72,31 @@ export async function createCheckpoint(
 ): Promise<Result<CheckpointRecord | null>> {
   const dirtyCheck = await hasUncommittedChanges(ctx);
   if (!dirtyCheck.ok) return dirtyCheck;
-
-  if (!dirtyCheck.value) {
-    return { ok: true, value: null };
-  }
+  if (!dirtyCheck.value) return { ok: true, value: null };
 
   const stageResult = await stageAll(ctx);
   if (!stageResult.ok) return stageResult;
 
-  const message = formatCommitMessage(description);
+  // Capture the file list AFTER staging so the commit message reflects
+  // exactly what this commit will record.
+  const stagedFiles = await diffStaged(ctx);
+  const fileItems = stagedFiles.ok ? formatFileChanges(stagedFiles.value) : [];
+
+  const subject = `${CHECKPOINT_PREFIX} ${summarizePrompt(description)}`;
+  const message = composeCommitMessage(subject, [
+    { heading: "Prompt", body: description.trim() },
+    { heading: "Changes", items: fileItems },
+  ]);
+
   const commitResult = await commit(ctx, message);
   if (!commitResult.ok) return commitResult;
 
-  const record: CheckpointRecord = {
-    sha: commitResult.value,
-    description,
-    timestamp: Date.now(),
+  return {
+    ok: true,
+    value: {
+      sha: commitResult.value,
+      description,
+      timestamp: Date.now(),
+    },
   };
-
-  return { ok: true, value: record };
 }

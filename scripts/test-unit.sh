@@ -30,4 +30,12 @@ echo "--- rediscover-teams ---"
 npx tsx "$PROJECT_DIR/tests/rediscover-teams.test.ts"
 echo ""
 
+echo "--- commit-message ---"
+npx tsx "$PROJECT_DIR/tests/commit-message.test.ts"
+echo ""
+
+echo "--- checkpoint-commit ---"
+npx tsx "$PROJECT_DIR/tests/checkpoint-commit.test.ts"
+echo ""
+
 echo "=== All unit tests passed ==="

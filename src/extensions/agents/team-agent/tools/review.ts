@@ -10,6 +10,12 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 
 import {
+  type CommitSection,
+  composeCommitMessage,
+  formatFileChanges,
+} from "../../../../lib/commit-message.js";
+import { diffNameStatus } from "../../../../lib/git.js";
+import {
   closeTask,
   getQueueSummary,
   getTaskById,
@@ -17,6 +23,7 @@ import {
   readQueue,
   rejectTask,
 } from "../../../../lib/task-queue.js";
+import type { Task } from "../../../../lib/types.js";
 import { destroyWorkspace, squashMergeWorkspace } from "../../../../lib/workspace.js";
 import type { TeamAgentRuntime } from "../runtime.js";
 import { watchQueueUntil } from "../watch.js";
@@ -153,9 +160,11 @@ async function handleClose(runtime: TeamAgentRuntime, taskId: string) {
   const workerName = task.assignedTo;
 
   if (task.branchName && task.worktreePath) {
-    // Stop the worker BEFORE touching its worktree: destroyWorkspace
-    // removes the cwd out from under a live process, which is safe
-    // but needlessly rude. The merge has already captured the work.
+    // Compose the squash commit message BEFORE merging: we need the
+    // diff between target and the worker branch, which only exists
+    // while the branch is still alive.
+    const commitMessage = await buildCloseCommitMessage(runtime, queue.targetBranch, task);
+
     const mergeResult = await squashMergeWorkspace(
       runtime.repoGit(),
       {
@@ -164,7 +173,7 @@ async function handleClose(runtime: TeamAgentRuntime, taskId: string) {
         baseBranch: queue.targetBranch,
       },
       {
-        commitMessage: `feat: ${task.title}`,
+        commitMessage,
         retryAfterRebase: true,
         workspaceGit: runtime.worktreeGit(task.worktreePath),
       },
@@ -175,6 +184,8 @@ async function handleClose(runtime: TeamAgentRuntime, taskId: string) {
       );
     }
 
+    // Stop the worker BEFORE destroying its worktree so we don't yank
+    // the cwd out from under a still-live pi process.
     if (workerName) await runtime.killWorkerWindow(workerName);
     await destroyWorkspace(runtime.repoGit(), task as { worktreePath: string; branchName: string });
   } else if (workerName) {
@@ -192,6 +203,41 @@ async function handleClose(runtime: TeamAgentRuntime, taskId: string) {
     }],
     details: {},
   };
+}
+
+/**
+ * Build the squash-merge commit message for a closed task.
+ *
+ *     feat: <title> [(N attempts)]
+ *
+ *     Description:
+ *     <task description>
+ *
+ *     Worker result:
+ *     <task.result>
+ *
+ *     Changes:
+ *     - add foo.ts
+ *     - modify bar.ts
+ */
+async function buildCloseCommitMessage(
+  runtime: TeamAgentRuntime,
+  baseBranch: string,
+  task: Task,
+): Promise<string> {
+  const diff = await diffNameStatus(runtime.repoGit(), baseBranch, task.branchName!);
+  const fileItems = diff.ok ? formatFileChanges(diff.value) : [];
+
+  const attemptsNote = task.attempts > 1 ? ` (${task.attempts} attempts)` : "";
+  const subject = `feat: ${task.title}${attemptsNote}`;
+
+  const sections: CommitSection[] = [
+    { heading: "Description", body: task.description },
+  ];
+  if (task.result) sections.push({ heading: "Worker result", body: task.result });
+  sections.push({ heading: "Changes", items: fileItems });
+
+  return composeCommitMessage(subject, sections);
 }
 
 // ---------------------------------------------------------------------------

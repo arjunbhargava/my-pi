@@ -450,9 +450,26 @@ export async function diffNameStatus(
   if (result.code !== 0) {
     return { ok: false, error: `git diff --name-status failed: ${result.stderr.trim()}` };
   }
+  return { ok: true, value: parseNameStatus(result.stdout) };
+}
 
+/**
+ * Per-file status of changes staged for commit (i.e. what `git commit`
+ * would record now). Useful right after {@link stageAll} when building
+ * a rich commit message.
+ */
+export async function diffStaged(ctx: GitContext): Promise<Result<DiffFileEntry[]>> {
+  const result = await execGit(ctx, ["diff", "--cached", "--name-status"]);
+  if (result.code !== 0) {
+    return { ok: false, error: `git diff --cached failed: ${result.stderr.trim()}` };
+  }
+  return { ok: true, value: parseNameStatus(result.stdout) };
+}
+
+/** Parse the `A\tpath` / `R100\told\tnew` output of `git diff --name-status`. */
+function parseNameStatus(stdout: string): DiffFileEntry[] {
   const entries: DiffFileEntry[] = [];
-  for (const line of result.stdout.trim().split("\n").filter(Boolean)) {
+  for (const line of stdout.trim().split("\n").filter(Boolean)) {
     const parts = line.split("\t");
     const statusCode = parts[0].charAt(0) as DiffStatus;
 
@@ -462,6 +479,5 @@ export async function diffNameStatus(
       entries.push({ status: statusCode, path: parts[1] });
     }
   }
-
-  return { ok: true, value: entries };
+  return entries;
 }

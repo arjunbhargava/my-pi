@@ -3,11 +3,15 @@
  */
 
 import {
-  type DiffFileEntry,
   diffNameStatus,
   diffSummary,
   getMainBranch,
 } from "../../lib/git.js";
+import {
+  composeCommitMessage,
+  formatFileChanges,
+} from "../../lib/commit-message.js";
+import type { DiffFileEntry } from "../../lib/git.js";
 import type { GitContext, Result } from "../../lib/types.js";
 import { destroyWorkspace, squashMergeWorkspace } from "../../lib/workspace.js";
 import { summarizePrompt } from "./checkpoint.js";
@@ -17,69 +21,30 @@ import type { TaskState } from "./types.js";
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Map a diff status letter to a human-readable verb. */
-function statusLabel(status: DiffFileEntry["status"]): string {
-  const labels: Record<DiffFileEntry["status"], string> = {
-    A: "add",
-    M: "modify",
-    D: "delete",
-    R: "rename",
-    C: "copy",
-    T: "change type",
-  };
-  return labels[status] ?? status;
-}
-
-/** Format a single diff entry as a human-readable line. */
-function formatDiffEntry(entry: DiffFileEntry): string {
-  if (entry.renamedTo) {
-    return `${statusLabel(entry.status)} ${entry.path} → ${entry.renamedTo}`;
-  }
-  return `${statusLabel(entry.status)} ${entry.path}`;
-}
-
 /**
  * Build a squash-merge commit message combining a file-level change
  * summary with the prompts that drove those changes.
  *
- * Format:
- * ```
- * <summary subject line>
+ *     <summary>
  *
- * Changes:
- * - add src/lib/new-file.ts
- * - modify src/extensions/worktree/accept-reject.ts
+ *     Prompts:
+ *     - add authentication middleware
+ *     - fix the login endpoint
  *
- * Prompts:
- * - add authentication middleware
- * - fix the login endpoint
- * ```
+ *     Changes:
+ *     - add src/lib/auth.ts
+ *     - modify src/lib/index.ts
  */
 function buildSquashMessage(
   task: TaskState,
   summary: string,
   fileChanges: DiffFileEntry[],
 ): string {
-  const sections: string[] = [summary, ""];
-
-  // File-level change summary
-  if (fileChanges.length > 0) {
-    sections.push("Changes:");
-    for (const entry of fileChanges) {
-      sections.push(`- ${formatDiffEntry(entry)}`);
-    }
-    sections.push("");
-  }
-
-  // Prompt history
-  if (task.checkpoints.length > 0) {
-    sections.push("Prompts:");
-    for (const cp of task.checkpoints) {
-      sections.push(`- ${summarizePrompt(cp.description)}`);
-    }
-  }
-
-  return sections.join("\n").trimEnd();
+  const prompts = task.checkpoints.map((cp) => summarizePrompt(cp.description));
+  return composeCommitMessage(summary, [
+    { heading: "Prompts", items: prompts },
+    { heading: "Changes", items: formatFileChanges(fileChanges) },
+  ]);
 }
 
 // ---------------------------------------------------------------------------

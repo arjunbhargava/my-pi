@@ -12,7 +12,16 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 
-import { commit, hasUncommittedChanges, stageAll } from "../../../../lib/git.js";
+import {
+  commit,
+  diffStaged,
+  hasUncommittedChanges,
+  stageAll,
+} from "../../../../lib/git.js";
+import {
+  composeCommitMessage,
+  formatFileChanges,
+} from "../../../../lib/commit-message.js";
 import {
   addTask,
   completeTask,
@@ -92,13 +101,23 @@ export function registerQueueTools(pi: ExtensionAPI, runtime: TeamAgentRuntime):
       const task = getTaskById(queue, params.taskId);
 
       // Auto-commit any uncommitted changes so the evaluator's merge
-      // has a stable tree to work with.
+      // has a stable tree to work with. The commit message bundles the
+      // task description and the worker's result summary together with
+      // the list of files this commit touches, so the worker branch's
+      // git log reads as a self-contained record.
       if (task?.worktreePath) {
         const git = runtime.worktreeGit(task.worktreePath);
         const dirty = await hasUncommittedChanges(git);
         if (dirty.ok && dirty.value) {
           await stageAll(git);
-          await commit(git, `task: ${task.title}`);
+          const staged = await diffStaged(git);
+          const fileItems = staged.ok ? formatFileChanges(staged.value) : [];
+          const message = composeCommitMessage(`task: ${task.title}`, [
+            { heading: "Description", body: task.description },
+            { heading: "Result", body: params.result },
+            { heading: "Changes", items: fileItems },
+          ]);
+          await commit(git, message);
         }
       }
 
