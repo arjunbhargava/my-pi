@@ -148,6 +148,15 @@ The orchestrator adds tasks, dispatches workers (each gets its own worktree and 
 
 Workers auto-commit with rich messages; evaluator merges with rich messages. Merging uses a rebase-retry strategy — if another worker landed changes on the target branch since the worker started, the worker's branch is automatically updated from target and the squash is retried.
 
+### Worker types
+
+The orchestrator picks a worker type per task via `dispatch_task`'s `workerType` arg:
+
+- `implementer` (default) — writes code test-first.
+- `scout` — reads and reports structured findings; never edits.
+- `researcher` — designs and runs experiments to produce numbers.
+- `tester` — runs *functional* tests against real systems with the user attached to the tmux window. Use when "code compiles and unit tests pass" isn't enough and you need to know the real end-to-end flow works: cloud provisioning, ML / GPU workloads, rendering and media pipelines, attached hardware, SSO / OAuth, third-party APIs, database migrations at realistic size. The tester asks the user to attach and supply prereqs (credentials, a connected device, a running service), announces each step that costs money or occupies a shared resource, and tears down everything it allocated before completing. If the user can't help right now, the tester switches to a DEFERRED mode — still commits the re-runnable test artifact and files a follow-up task for live verification later. The orchestrator's guidance on when to dispatch lives in `agents/roles/orchestrator.md`.
+
 ### Attaching / stopping
 
 ```
@@ -173,6 +182,7 @@ If you quit pi while a team is running and come back later, you'll see `Reattach
 | `/team-status` | Show status of running teams and their queues |
 | `/team-stop` | Stop a running team and kill its tmux session |
 | `/team-attach` | Print the `tmux attach` command for a running team |
+| `/team-logs` | List past team agent sessions, or render one as a plain-text transcript for `rg` |
 
 ## Tools (Available to Agents)
 
@@ -258,7 +268,8 @@ my-pi/
 │   └── workers/                       # Ephemeral worker templates
 │       ├── implementer.md             # writes code, test-first
 │       ├── scout.md                   # reads and reports
-│       └── researcher.md              # runs experiments
+│       ├── researcher.md              # runs experiments
+│       └── tester.md                  # runs functional tests with the human in the loop
 ├── skills/
 │   └── worktree-workflow/SKILL.md     # Teaches the agent worktree conventions
 ├── scripts/
@@ -273,7 +284,7 @@ my-pi/
 ## Testing
 
 ```bash
-./scripts/test-unit.sh      # unit + integration tests (tsc clean, seven test files)
+./scripts/test-unit.sh      # unit + integration tests (tsc clean, nine test files)
 ./scripts/test-smoke.sh     # end-to-end smoke via a fixture repo
 ```
 

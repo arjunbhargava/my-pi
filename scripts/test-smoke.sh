@@ -55,13 +55,22 @@ echo "  ✓ Fixture repo configured"
 echo "--- Verifying agent definitions ---"
 AGENTS_DIR="$MY_PI_DIR/agents"
 
-for file in roles/orchestrator.md roles/evaluator.md workers/implementer.md workers/scout.md workers/researcher.md; do
+AGENT_FILES=(
+  roles/orchestrator.md
+  roles/evaluator.md
+  roles/code-reviewer.md
+  workers/implementer.md
+  workers/scout.md
+  workers/researcher.md
+  workers/tester.md
+)
+for file in "${AGENT_FILES[@]}"; do
   if [ ! -f "$AGENTS_DIR/$file" ]; then
     echo "FAIL: $file not found"
     exit 1
   fi
 done
-echo "  ✓ All agent definitions present (5 files)"
+echo "  ✓ All agent definitions present (${#AGENT_FILES[@]} files)"
 
 # -----------------------------------------------------------------------
 # 4. Test task queue file operations from the project directory
