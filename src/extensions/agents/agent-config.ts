@@ -22,7 +22,14 @@ import { readFile, readdir, stat } from "node:fs/promises";
 import * as path from "node:path";
 
 import type { Result } from "../../lib/types.js";
-import { type AgentDefinition, type AgentRole, ROLES_DIR, WORKERS_DIR } from "./types.js";
+import {
+  type AgentDefinition,
+  type AgentRole,
+  type Capability,
+  CAPABILITIES,
+  ROLES_DIR,
+  WORKERS_DIR,
+} from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Frontmatter parsing (minimal, no yaml dependency)
@@ -87,6 +94,9 @@ export async function parseAgentFile(
     ? meta.tools.split(",").map((t) => t.trim()).filter(Boolean)
     : undefined;
 
+  const capabilitiesResult = parseCapabilities(meta.capabilities, filePath);
+  if (!capabilitiesResult.ok) return capabilitiesResult;
+
   return {
     ok: true,
     value: {
@@ -95,10 +105,33 @@ export async function parseAgentFile(
       description: meta.description ?? "",
       model: meta.model || undefined,
       tools,
+      capabilities: capabilitiesResult.value,
       systemPrompt,
       filePath,
     },
   };
+}
+
+/**
+ * Parse the `capabilities` frontmatter value into a validated list.
+ * An empty or missing value yields an empty array. Unknown values are
+ * an error — typos should surface loudly rather than being silently ignored.
+ */
+function parseCapabilities(raw: string | undefined, filePath: string): Result<Capability[]> {
+  if (!raw) return { ok: true, value: [] };
+
+  const items = raw.split(",").map((c) => c.trim()).filter(Boolean);
+  const valid: Capability[] = [];
+  for (const item of items) {
+    if (!CAPABILITIES.includes(item as Capability)) {
+      return {
+        ok: false,
+        error: `Unknown capability '${item}' in '${filePath}'. Valid: ${CAPABILITIES.join(", ")}`,
+      };
+    }
+    valid.push(item as Capability);
+  }
+  return { ok: true, value: valid };
 }
 
 // ---------------------------------------------------------------------------

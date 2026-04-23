@@ -28,12 +28,11 @@ const TEAM_CONTEXT_MESSAGE_TYPE = "team-context";
  */
 export function registerSessionHooks(pi: ExtensionAPI, runtime: TeamAgentRuntime): void {
   const { config, agentName, queuePath } = runtime;
-  const label = displayLabel(config);
 
   pi.on("session_start", async (_event, ctx) => {
     const goalPreview = truncate(config.goal, TITLE_GOAL_MAX);
-    ctx.ui.setTitle(`pi — ${label} | ${goalPreview}`);
-    ctx.ui.setStatus("team-agent", `[${label} | team: ${config.teamId}]`);
+    ctx.ui.setTitle(`pi — ${agentName} | ${goalPreview}`);
+    ctx.ui.setStatus("team-agent", `[${agentName} | team: ${config.teamId}]`);
     ctx.ui.notify(startupBanner(agentName, config, queuePath), "info");
   });
 
@@ -63,18 +62,13 @@ export function registerSessionHooks(pi: ExtensionAPI, runtime: TeamAgentRuntime
   });
 }
 
-/** Short, human-friendly role label used in the UI. */
-function displayLabel(config: TeamAgentConfig): string {
-  if (config.canDispatch) return "orchestrator";
-  if (config.canClose) return "evaluator";
-  return config.agentName;
-}
-
 /** Role description shown on the first startup notify. */
 function roleLine(config: TeamAgentConfig): string {
-  if (config.canDispatch) return "Role: ORCHESTRATOR (plans & dispatches)";
-  if (config.canClose) return "Role: EVALUATOR (reviews & closes)";
-  return `Role: WORKER (${config.agentName})`;
+  if (config.role === "worker") return `Role: WORKER (${config.agentName})`;
+  const caps = config.capabilities.length > 0
+    ? ` [capabilities: ${config.capabilities.join(", ")}]`
+    : "";
+  return `Role: PERMANENT${caps}`;
 }
 
 function startupBanner(agentName: string, config: TeamAgentConfig, queuePath: string): string {

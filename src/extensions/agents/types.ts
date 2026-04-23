@@ -39,11 +39,23 @@ export const WORKERS_DIR = "workers";
 export type AgentRole = "permanent" | "worker";
 
 /**
+ * A privilege an agent can hold. Declared in frontmatter; controls
+ * which tool bundle gets registered for that agent.
+ *
+ *   dispatch — may spawn workers and monitor their progress
+ *   close    — may approve/reject reviewed tasks and merge branches
+ */
+export type Capability = "dispatch" | "close";
+
+/** All valid capability names. Keep in sync with {@link Capability}. */
+export const CAPABILITIES: readonly Capability[] = ["dispatch", "close"];
+
+/**
  * Parsed agent definition from a markdown file with YAML frontmatter.
  *
- * Permanent agents (orchestrator, evaluator) run for the entire team
- * session and maintain conversation history. Workers are spawned for
- * individual tasks and exit on completion.
+ * Permanent agents run for the entire team session and maintain
+ * conversation history. Workers are spawned for individual tasks and
+ * exit on completion.
  */
 export interface AgentDefinition {
   /** Unique agent name (from frontmatter `name` field). */
@@ -56,6 +68,8 @@ export interface AgentDefinition {
   model?: string;
   /** Tool names the agent should have access to. Optional — uses defaults if omitted. */
   tools?: string[];
+  /** Privileges declared in frontmatter. Empty for workers. */
+  capabilities: Capability[];
   /** System prompt content (the markdown body after frontmatter). */
   systemPrompt: string;
   /** Absolute path to the source .md file. */
@@ -130,14 +144,12 @@ export interface TeamAgentConfig {
   goal: string;
   /** This agent's instance name. */
   agentName: string;
-  /** Agent role (determines which tools are registered). */
+  /** Agent role (persistent vs. ephemeral). */
   role: AgentRole;
   /** Absolute path to the queue file. */
   queuePath: string;
-  /** Whether this agent can dispatch workers (orchestrator only). */
-  canDispatch: boolean;
-  /** Whether this agent can close tasks (evaluator only). */
-  canClose: boolean;
+  /** Privileges granted to this agent. Controls which tool bundles are registered. */
+  capabilities: Capability[];
   /** tmux session name (needed by orchestrator to spawn workers). */
   tmuxSession: string;
   /** Working directory for spawned worker processes. */

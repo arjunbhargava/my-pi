@@ -98,7 +98,43 @@ test("parseAgentFile handles optional fields", async () => {
   assert.equal(result.value.name, "minimal");
   assert.equal(result.value.model, undefined);
   assert.equal(result.value.tools, undefined);
+  assert.deepEqual(result.value.capabilities, []);
   assert.equal(result.value.role, "permanent");
+  await cleanup();
+});
+
+test("parseAgentFile parses capabilities", async () => {
+  const dir = await setup();
+  const filePath = path.join(dir, "orch.md");
+  await writeFile(filePath, [
+    "---",
+    "name: orchestrator",
+    "capabilities: dispatch, close",
+    "---",
+    "Body.",
+  ].join("\n"));
+
+  const result = await parseAgentFile(filePath, "permanent");
+  assert.ok(result.ok);
+  if (!result.ok) return;
+  assert.deepEqual(result.value.capabilities, ["dispatch", "close"]);
+  await cleanup();
+});
+
+test("parseAgentFile rejects unknown capability", async () => {
+  const dir = await setup();
+  const filePath = path.join(dir, "bad.md");
+  await writeFile(filePath, [
+    "---",
+    "name: rogue",
+    "capabilities: dispatch, nuke",
+    "---",
+    "Body.",
+  ].join("\n"));
+
+  const result = await parseAgentFile(filePath, "permanent");
+  assert.ok(!result.ok);
+  assert.ok(result.error.includes("Unknown capability 'nuke'"));
   await cleanup();
 });
 

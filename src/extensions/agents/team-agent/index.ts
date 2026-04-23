@@ -28,6 +28,6 @@ export default function teamAgentExtension(pi: ExtensionAPI): void {
 
   registerSessionHooks(pi, runtime);
   registerQueueTools(pi, runtime);
-  if (config.canDispatch) registerDispatchTools(pi, runtime);
-  if (config.canClose) registerReviewTools(pi, runtime);
+  if (config.capabilities.includes("dispatch")) registerDispatchTools(pi, runtime);
+  if (config.capabilities.includes("close")) registerReviewTools(pi, runtime);
 }

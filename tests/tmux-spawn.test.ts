@@ -33,6 +33,7 @@ async function run(): Promise<void> {
     name: "implementer",
     role: "worker",
     description: "test worker",
+    capabilities: [],
     systemPrompt: "test",
     filePath: workerDefPath,
   };
@@ -43,8 +44,7 @@ async function run(): Promise<void> {
     agentName: "worker-spawn-test",
     role: "worker",
     queuePath: path.join(TMPDIR, "queue.json"),
-    canDispatch: false,
-    canClose: false,
+    capabilities: [],
     tmuxSession: SESSION,
     workingDir: projectDir,
     teamAgentExtensionPath: teamAgentPath,

@@ -21,6 +21,7 @@ const fakeDef: AgentDefinition = {
   description: "test",
   model: "claude-sonnet-4-5",
   tools: ["read", "bash", "edit", "write", "grep", "find"],
+  capabilities: [],
   systemPrompt: "You are a worker.",
   filePath: `${process.cwd()}/agents/workers/implementer.md`,
 };
@@ -31,8 +32,7 @@ const fakeConfig: TeamAgentConfig = {
   agentName: "worker-test",
   role: "worker",
   queuePath: "/tmp/fake-queue.json",
-  canDispatch: false,
-  canClose: false,
+  capabilities: [],
   tmuxSession: "pi-test",
   workingDir: process.cwd(),
   teamAgentExtensionPath: `${process.cwd()}/src/extensions/agents/team-agent/index.ts`,
