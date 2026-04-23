@@ -122,6 +122,14 @@ Creates:
 - A tmux session `pi-team-build-a-login-flow-with-jwt` with a `board` window showing the live queue.
 - One tmux window per permanent agent (`orchestrator`, `evaluator`) running its own pi instance.
 
+The orchestrator opens with a **plan review**: it explores the repo, drafts a task breakdown, and stops to present the plan in its tmux window. Attach and approve (or redirect) before anything gets dispatched:
+
+```
+tmux attach -t pi-team-build-a-login-flow-with-jwt \; select-window -t orchestrator
+```
+
+Reply `go` to approve, or tell the orchestrator what to change. Once approved, execution is automatic — re-dispatches, follow-ups from the code reviewer, and evaluator feedback loops all run without further prompts. Net-new subgoals or material scope changes trigger a fresh plan review.
+
 Agents are defined in `agents/roles/*.md` (permanent) and `agents/workers/*.md` (ephemeral) as markdown with YAML frontmatter:
 
 ```yaml

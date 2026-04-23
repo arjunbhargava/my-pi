@@ -153,8 +153,10 @@ export function registerAgentCommands(
           `Queue: ${team.queuePath}`,
           `Agents: ${team.agents.map((a) => a.name).join(", ")}`,
           "",
-          `Attach with: tmux attach -t ${team.tmuxSession}`,
-          `Switch windows: Ctrl+B then N/P`,
+          `The orchestrator will draft a plan and wait for your approval`,
+          `before dispatching any workers. Attach to review it:`,
+          `  tmux attach -t ${team.tmuxSession} \\; select-window -t orchestrator`,
+          `Switch windows once attached: Ctrl+B then N/P`,
         ].join("\n"),
         "info",
       );
