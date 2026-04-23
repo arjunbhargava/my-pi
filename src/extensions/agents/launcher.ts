@@ -139,13 +139,44 @@ export function buildAgentCommand(scriptPath: string): string {
   return `bash ${sq(scriptPath)}`;
 }
 
+// ---------------------------------------------------------------------------
+// Agent spawning
+// ---------------------------------------------------------------------------
+
+export interface SpawnAgentRequest {
+  /** Parsed agent role/worker definition from a .md file. */
+  agentDef: AgentDefinition;
+  /** The TeamAgentConfig the spawned process will read on startup. */
+  config: TeamAgentConfig;
+  /** First user message sent to pi on startup. */
+  initialPrompt?: string;
+  /** Directory holding per-team artifacts (configs, scripts, logs). */
+  baseDir: string;
+}
+
 /**
- * Build a command to launch a worker for a specific task.
+ * Spawn one team agent in a new tmux window.
+ *
+ * Writes the config JSON and launch script to {@link SpawnAgentRequest.baseDir},
+ * then asks tmux to open a window in {@link TeamAgentConfig.workingDir}
+ * that executes the script. Returns the window-creation result — the
+ * caller is responsible for rollback on failure (the helper has no
+ * notion of the surrounding team session or git state).
  */
-export function buildWorkerCommand(
-  scriptPath: string,
-): string {
-  return buildAgentCommand(scriptPath);
+export async function spawnAgentWindow(
+  ctx: ExecContext,
+  req: SpawnAgentRequest,
+): Promise<Result<void>> {
+  const { agentDef, config, initialPrompt, baseDir } = req;
+  const configPath = await writeAgentConfigFile(baseDir, config.teamId, config.agentName, config);
+  const scriptPath = await writeAgentLaunchScript(
+    baseDir, config.teamId, config.agentName, agentDef, configPath, initialPrompt,
+  );
+  const command = buildAgentCommand(scriptPath);
+  return createWindow(ctx, config.tmuxSession, config.agentName, {
+    command,
+    cwd: config.workingDir,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -219,19 +250,15 @@ export async function launchTeam(
       agentSystemPrompt: agentDef.systemPrompt,
     };
 
-    const configPath = await writeAgentConfigFile(baseDir, teamId, agentDef.name, agentConfig);
-    const scriptPath = await writeAgentLaunchScript(
-      baseDir, teamId, agentDef.name, agentDef, configPath, initialPrompt,
-    );
-    const command = buildAgentCommand(scriptPath);
-
-    const windowResult = await createWindow(ctx, tmuxSession, agentDef.name, {
-      command,
-      cwd: workingDir,
+    const spawnResult = await spawnAgentWindow(ctx, {
+      agentDef,
+      config: agentConfig,
+      initialPrompt,
+      baseDir,
     });
-    if (!windowResult.ok) {
+    if (!spawnResult.ok) {
       await killSession(ctx, tmuxSession);
-      return windowResult;
+      return spawnResult;
     }
 
     agents.push({

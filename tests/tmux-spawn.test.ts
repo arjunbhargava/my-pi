@@ -10,7 +10,7 @@ import { writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { strict as assert } from "node:assert";
-import { writeAgentConfigFile, writeAgentLaunchScript, buildWorkerCommand } from "../src/extensions/agents/launcher.js";
+import { writeAgentConfigFile, writeAgentLaunchScript, buildAgentCommand } from "../src/extensions/agents/launcher.js";
 import type { AgentDefinition, TeamAgentConfig } from "../src/extensions/agents/types.js";
 
 const SESSION = "pi-spawn-test";
@@ -65,7 +65,7 @@ async function run(): Promise<void> {
   const scriptPath = await writeAgentLaunchScript(
     TMPDIR, "test", "worker-spawn-test", workerDef, configPath,
   );
-  const command = buildWorkerCommand(scriptPath);
+  const command = buildAgentCommand(scriptPath);
 
   console.log("  Script path:", scriptPath);
   console.log("  Command:", command);

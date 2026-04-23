@@ -18,14 +18,10 @@ import {
   readQueue,
   recoverTask,
 } from "../../../../lib/task-queue.js";
-import { capturePane, createWindow } from "../../../../lib/tmux.js";
+import { capturePane } from "../../../../lib/tmux.js";
 import type { Task, TaskQueue, TaskStatus } from "../../../../lib/types.js";
 import { discoverAgentsFromDirs } from "../../agent-config.js";
-import {
-  buildWorkerCommand,
-  writeAgentConfigFile,
-  writeAgentLaunchScript,
-} from "../../launcher.js";
+import { spawnAgentWindow } from "../../launcher.js";
 import type { TeamAgentConfig } from "../../types.js";
 import type { TeamAgentRuntime } from "../runtime.js";
 import { watchQueueUntil } from "../watch.js";
@@ -142,7 +138,6 @@ async function handleDispatch(
   }
   await runtime.saveQueue(queue);
 
-  // Spawn the worker pi process in a new tmux window.
   const workerConfig: TeamAgentConfig = {
     teamId: config.teamId,
     goal: config.goal,
@@ -162,19 +157,15 @@ async function handleDispatch(
     "Use read_queue to get your task details, then do the work, then use complete_task when done.",
   ].join(" ");
 
-  const configPath = await writeAgentConfigFile(baseDir, config.teamId, workerName, workerConfig);
-  const scriptPath = await writeAgentLaunchScript(
-    baseDir, config.teamId, workerName, workerDef, configPath, taskPrompt,
-  );
-  const command = buildWorkerCommand(scriptPath);
-
-  const windowResult = await createWindow(runtime.tmuxExec(), config.tmuxSession, workerName, {
-    command,
-    cwd: workerWorktreePath,
+  const spawnResult = await spawnAgentWindow(runtime.tmuxExec(), {
+    agentDef: workerDef,
+    config: workerConfig,
+    initialPrompt: taskPrompt,
+    baseDir,
   });
-  if (!windowResult.ok) {
+  if (!spawnResult.ok) {
     await runtime.cleanupWorkerGit(workerWorktreePath, workerBranch);
-    throw new Error(`Failed to spawn worker tmux window: ${windowResult.error}`);
+    throw new Error(`Failed to spawn worker tmux window: ${spawnResult.error}`);
   }
 
   return {

@@ -9,7 +9,7 @@
 import { execSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import {
-  buildWorkerCommand,
+  buildAgentCommand,
   writeAgentConfigFile,
   writeAgentLaunchScript,
 } from "../src/extensions/agents/launcher.js";
@@ -48,7 +48,7 @@ async function main(): Promise<void> {
     baseDir, fakeConfig.teamId, fakeConfig.agentName, fakeDef, configPath,
   );
 
-  const cmd = buildWorkerCommand(scriptPath);
+  const cmd = buildAgentCommand(scriptPath);
   console.log("=== GENERATED COMMAND ===");
   console.log(cmd);
   console.log(`\n=== LENGTH: ${cmd.length} chars ===\n`);
