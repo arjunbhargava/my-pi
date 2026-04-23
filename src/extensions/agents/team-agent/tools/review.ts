@@ -28,11 +28,18 @@ import {
   rejectTask,
 } from "../../../../lib/task-queue.js";
 import type { TaskQueue } from "../../../../lib/types.js";
-import { QUEUE_POLL_INTERVAL_MS } from "../../types.js";
 import type { TeamAgentRuntime } from "../runtime.js";
+import { watchQueueUntil } from "../watch.js";
 
 /** Default timeout (seconds) for wait_for_reviews. */
 const WAIT_DEFAULT_TIMEOUT_SEC = 120;
+
+/**
+ * Heartbeat for wait_for_reviews. fs.watch catches every queue write,
+ * so this is a conservative safety net against missed events on
+ * network or virtualised filesystems — not the primary wake source.
+ */
+const WAIT_HEARTBEAT_MS = 30_000;
 
 /** How many chars of task.result to show in the review summary. */
 const RESULT_PREVIEW_CHARS = 200;
@@ -97,33 +104,42 @@ async function handleWait(
   timeoutMs: number,
   signal: AbortSignal | undefined,
 ) {
-  const pollResult = await pollUntil(
+  let readyTasks: ReturnType<typeof getTasksByStatus> = [];
+
+  const outcome = await watchQueueUntil(
     runtime.queuePath,
-    (q) => getTasksByStatus(q, "review").length > 0,
-    signal,
-    timeoutMs,
+    async (queue) => {
+      const tasks = getTasksByStatus(queue, "review");
+      if (tasks.length > 0) {
+        readyTasks = tasks;
+        return "done";
+      }
+      return "continue";
+    },
+    { signal, timeoutMs, heartbeatMs: WAIT_HEARTBEAT_MS },
   );
 
-  if (!pollResult.ok) {
+  if (outcome === "aborted") {
     return {
-      content: [{ type: "text" as const, text: `Wait ended: ${pollResult.error}` }],
+      content: [{ type: "text" as const, text: "Wait aborted." }],
       details: {},
     };
   }
 
-  const reviewTasks = getTasksByStatus(pollResult.value, "review");
-  if (reviewTasks.length === 0) {
+  if (outcome === "timeout") {
+    const final = await readQueue(runtime.queuePath);
+    const summary = final.ok ? getQueueSummary(final.value) : "(queue unavailable)";
     return {
       content: [{
         type: "text" as const,
-        text: `No tasks in review yet (timed out). Current state:\n${getQueueSummary(pollResult.value)}`,
+        text: `No tasks in review yet (timed out). Current state:\n${summary}`,
       }],
       details: {},
     };
   }
 
   const lines = ["Tasks ready for review:\n"];
-  for (const t of reviewTasks) {
+  for (const t of readyTasks) {
     lines.push(`${t.id} — ${t.title}`);
     if (t.result) {
       const preview = t.result.slice(0, RESULT_PREVIEW_CHARS);
@@ -275,30 +291,3 @@ async function handleReject(runtime: TeamAgentRuntime, taskId: string, feedback:
   };
 }
 
-// ---------------------------------------------------------------------------
-// Polling
-// ---------------------------------------------------------------------------
-
-/**
- * Poll the queue file until the predicate is satisfied, the signal
- * aborts, or the timeout fires. On timeout, returns the current state
- * so the caller can make a decision rather than retrying blindly.
- */
-async function pollUntil(
-  queuePath: string,
-  predicate: (queue: TaskQueue) => boolean,
-  signal: AbortSignal | undefined,
-  timeoutMs: number,
-): Promise<{ ok: true; value: TaskQueue } | { ok: false; error: string }> {
-  const deadline = Date.now() + timeoutMs;
-
-  while (!signal?.aborted && Date.now() < deadline) {
-    const result = await readQueue(queuePath);
-    if (!result.ok) return result;
-    if (predicate(result.value)) return result;
-    await new Promise((resolve) => setTimeout(resolve, QUEUE_POLL_INTERVAL_MS));
-  }
-
-  if (signal?.aborted) return { ok: false, error: "Polling aborted" };
-  return await readQueue(queuePath);
-}

@@ -19,7 +19,7 @@ import {
   recoverTask,
 } from "../../../../lib/task-queue.js";
 import { capturePane, createWindow } from "../../../../lib/tmux.js";
-import type { TaskQueue } from "../../../../lib/types.js";
+import type { Task, TaskQueue, TaskStatus } from "../../../../lib/types.js";
 import { discoverAgentsFromDirs } from "../../agent-config.js";
 import {
   buildWorkerCommand,
@@ -27,14 +27,22 @@ import {
   writeAgentLaunchScript,
 } from "../../launcher.js";
 import type { TeamAgentConfig } from "../../types.js";
-import { QUEUE_POLL_INTERVAL_MS } from "../../types.js";
 import type { TeamAgentRuntime } from "../runtime.js";
+import { watchQueueUntil } from "../watch.js";
 
 /** Default worker agent type when dispatch_task is called without one. */
 const DEFAULT_WORKER_TYPE = "implementer";
 
-/** Default timeouts (seconds) for the two polling tools. */
+/** Default timeout (seconds) for monitor_tasks. */
 const MONITOR_DEFAULT_TIMEOUT_SEC = 120;
+
+/**
+ * How often monitor_tasks re-runs dead-worker detection even without a
+ * queue write. Worker death doesn't produce a filesystem event by itself
+ * (tmux doesn't touch the queue), so we periodically poll tmux as a
+ * safety net. Cheap: one `tmux list-windows` call.
+ */
+const MONITOR_HEARTBEAT_MS = 10_000;
 
 /** Width of captured-output lines shown in check_workers. */
 const WORKER_OUTPUT_LINE_WIDTH = 120;
@@ -197,40 +205,51 @@ async function handleMonitor(
   timeoutMs: number,
   signal: AbortSignal | undefined,
 ) {
-  const deadline = Date.now() + timeoutMs;
-
+  // Baseline the current state before entering the wait so we only
+  // report on actual changes that happen DURING the call.
   const initial = await runtime.loadQueue();
-  let lastCounts = snapshotCounts(initial);
+  let lastSignature = signQueue(initial);
+  let finalMessage: string | null = null;
 
-  while (!signal?.aborted && Date.now() < deadline) {
-    const queue = await runtime.loadQueue();
+  const outcome = await watchQueueUntil(
+    runtime.queuePath,
+    async (queue) => {
+      // First: reap workers whose tmux windows have vanished. This
+      // runs even when no queue write triggered the wake, thanks to
+      // the heartbeat.
+      const recovered = await recoverDeadWorkers(runtime, queue);
+      if (recovered > 0) {
+        await runtime.saveQueue(queue);
+        finalMessage =
+          `Recovered ${recovered} task(s) from dead workers.\n\n${getQueueSummary(queue)}`;
+        return "done";
+      }
 
-    const recovered = await recoverDeadWorkers(runtime, queue);
-    if (recovered > 0) {
-      await runtime.saveQueue(queue);
-      return {
-        content: [{
-          type: "text" as const,
-          text: `Recovered ${recovered} task(s) from dead workers.\n\n${getQueueSummary(queue)}`,
-        }],
-        details: {},
-      };
-    }
+      // Next: diff task identities + statuses. A (complete, dispatch)
+      // pair that keeps counts stable still registers as a change.
+      const signature = signQueue(queue);
+      if (signature !== lastSignature) {
+        finalMessage = getQueueSummary(queue);
+        return "done";
+      }
+      lastSignature = signature;
+      return "continue";
+    },
+    { signal, timeoutMs, heartbeatMs: MONITOR_HEARTBEAT_MS },
+  );
 
-    const counts = snapshotCounts(queue);
-    if (!countsEqual(counts, lastCounts)) {
-      return {
-        content: [{ type: "text" as const, text: getQueueSummary(queue) }],
-        details: {},
-      };
-    }
-    lastCounts = counts;
-
-    await sleep(QUEUE_POLL_INTERVAL_MS);
+  if (outcome === "aborted") {
+    return {
+      content: [{ type: "text" as const, text: "Monitor aborted." }],
+      details: {},
+    };
   }
 
-  // Timeout: return the current state (read without throwing) so the
-  // caller can decide what to do next.
+  if (outcome === "done" && finalMessage !== null) {
+    return { content: [{ type: "text" as const, text: finalMessage }], details: {} };
+  }
+
+  // Timeout: read the latest state non-throwingly so the LLM can decide.
   const final = await readQueue(runtime.queuePath);
   const summary = final.ok ? getQueueSummary(final.value) : "(queue read failed)";
   return {
@@ -242,27 +261,28 @@ async function handleMonitor(
   };
 }
 
-interface QueueCounts {
-  queued: number;
-  active: number;
-  review: number;
-  closed: number;
+/**
+ * A stable string identity for a queue's observable state. Two queues
+ * with the same signature are indistinguishable to a monitor caller
+ * (same active tasks with same statuses, same closed count). A
+ * (complete, dispatch) pair with no net count change still produces a
+ * different signature because individual task statuses shift.
+ */
+function signQueue(queue: TaskQueue): string {
+  const parts = queue.tasks
+    .map((t: Task) => `${t.id}:${statusCode(t.status)}`)
+    .sort();
+  return `${parts.join(",")}|closed=${queue.closed.length}`;
 }
 
-function snapshotCounts(queue: TaskQueue): QueueCounts {
-  return {
-    queued: getTasksByStatus(queue, "queued").length,
-    active: getTasksByStatus(queue, "active").length,
-    review: getTasksByStatus(queue, "review").length,
-    closed: queue.closed.length,
-  };
-}
-
-function countsEqual(a: QueueCounts, b: QueueCounts): boolean {
-  return a.queued === b.queued
-    && a.active === b.active
-    && a.review === b.review
-    && a.closed === b.closed;
+function statusCode(status: TaskStatus): string {
+  // Short codes keep the signature compact for long task lists.
+  switch (status) {
+    case "queued": return "q";
+    case "active": return "a";
+    case "review": return "r";
+    case "closed": return "c";
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -361,6 +381,3 @@ async function recoverDeadWorkers(runtime: TeamAgentRuntime, queue: TaskQueue): 
   return recovered;
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}

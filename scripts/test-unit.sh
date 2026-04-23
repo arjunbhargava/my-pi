@@ -18,4 +18,8 @@ echo "--- agent-config ---"
 npx tsx "$PROJECT_DIR/tests/agent-config.test.ts"
 echo ""
 
+echo "--- watch-queue ---"
+npx tsx "$PROJECT_DIR/tests/watch-queue.test.ts"
+echo ""
+
 echo "=== All unit tests passed ==="

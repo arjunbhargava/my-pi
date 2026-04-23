@@ -22,9 +22,6 @@ export const TEAM_TMUX_PREFIX = "pi-team-";
 /** Maximum number of concurrent ephemeral workers. */
 export const MAX_CONCURRENT_WORKERS = 6;
 
-/** Poll interval (ms) for monitor/wait tools checking the queue file. */
-export const QUEUE_POLL_INTERVAL_MS = 3000;
-
 /** Directory name for permanent agent role definitions. */
 export const ROLES_DIR = "roles";
 
