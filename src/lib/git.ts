@@ -436,17 +436,28 @@ export interface DiffFileEntry {
 }
 
 /**
- * Return a per-file status list between two refs.
+ * Return a per-file status list describing what the `toRef` branch
+ * contributed since it diverged from `fromRef`.
+ *
+ * Uses three-dot semantics (`git diff fromRef...toRef`, equivalent to
+ * `git diff $(git merge-base fromRef toRef) toRef`) so the result is
+ * anchored at the branch point. Two-dot diff here would falsely report
+ * files that landed on `fromRef` *after* `toRef` branched off as
+ * "deletions" by `toRef`, which is exactly the bug that rich squash-
+ * merge commit messages used to carry.
  *
  * Each entry has a status letter (A/M/D/R/C/T) and path(s).
- * Useful for building human-readable change summaries.
  */
 export async function diffNameStatus(
   ctx: GitContext,
   fromRef: string,
   toRef: string,
 ): Promise<Result<DiffFileEntry[]>> {
-  const result = await execGit(ctx, ["diff", "--name-status", fromRef, toRef]);
+  const result = await execGit(ctx, [
+    "diff",
+    "--name-status",
+    `${fromRef}...${toRef}`,
+  ]);
   if (result.code !== 0) {
     return { ok: false, error: `git diff --name-status failed: ${result.stderr.trim()}` };
   }

@@ -22,6 +22,10 @@ echo "--- session-archive ---"
 npx tsx "$PROJECT_DIR/tests/session-archive.test.ts"
 echo ""
 
+echo "--- diff-name-status ---"
+npx tsx "$PROJECT_DIR/tests/diff-name-status.test.ts"
+echo ""
+
 echo "--- agent-config ---"
 npx tsx "$PROJECT_DIR/tests/agent-config.test.ts"
 echo ""
