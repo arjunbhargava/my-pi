@@ -6,13 +6,14 @@
  */
 
 import { searchWeb } from "./search.js";
-import { DEFAULT_RESULT_COUNT, TAVILY_API_KEY_ENV, type SearchResponse } from "./types.js";
+import { fetchPageText } from "./fetch.js";
+import { DEFAULT_FETCH_MAX_CHARS, DEFAULT_RESULT_COUNT, TAVILY_API_KEY_ENV, type SearchResponse } from "./types.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- pi's registerTool uses complex generic types from typebox
 type ToolRegistrar = (def: any) => void;
 
 /**
- * Register the web_search tool.
+ * Register the web_search and web_fetch tools.
  *
  * @param register    - The `pi.registerTool` function.
  * @param TypeObject  - `Type.Object` from typebox.
@@ -28,6 +29,8 @@ export function registerWebSearchTools(
   TypeOptional: (...args: any[]) => any,
   TypeInteger: (...args: any[]) => any,
 ): void {
+  registerWebFetchTool(register, TypeObject, TypeString, TypeOptional, TypeInteger);
+
   register({
     name: "web_search",
     label: "Web Search",
@@ -69,6 +72,53 @@ export function registerWebSearchTools(
       return {
         content: [{ type: "text", text: formatSearchOutput(result.value) }],
         details: { resultCount: result.value.results.length, hasAnswer: result.value.answer !== undefined },
+      };
+    },
+  });
+}
+
+function registerWebFetchTool(
+  register: ToolRegistrar,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- typebox schema constructors
+  TypeObject: (...args: any[]) => any,
+  TypeString: (...args: any[]) => any,
+  TypeOptional: (...args: any[]) => any,
+  TypeInteger: (...args: any[]) => any,
+): void {
+  register({
+    name: "web_fetch",
+    label: "Web Fetch",
+    description:
+      "Fetch a web page and extract its readable text content. Use after web_search when snippets don't contain enough detail. " +
+      "Returns plain text stripped of HTML markup, truncated to a configurable limit.",
+    promptSnippet: "Fetch a URL and extract readable text content from the page.",
+    promptGuidelines: [
+      "Use web_fetch only after web_search, when search result snippets lack the detail needed. Do not use web_fetch speculatively on multiple URLs.",
+    ],
+    parameters: TypeObject({
+      url: TypeString({ description: "URL to fetch" }),
+      maxChars: TypeOptional(TypeInteger({ description: "Maximum characters to extract, default 6000" })),
+    }),
+
+    async execute(_toolCallId: string, params: Record<string, unknown>) {
+      const url = params.url as string;
+      const maxChars = typeof params.maxChars === "number" ? params.maxChars : DEFAULT_FETCH_MAX_CHARS;
+
+      const result = await fetchPageText({ url, maxChars });
+      if (!result.ok) {
+        return {
+          content: [{ type: "text", text: `Fetch failed: ${result.error}` }],
+          details: {},
+          isError: true,
+        };
+      }
+
+      const { charCount, truncated } = result.value;
+      const truncatedNote = truncated ? ", truncated" : "";
+      const header = `[Fetched: ${url}]\n[${charCount} chars extracted${truncatedNote}]\n\n`;
+      return {
+        content: [{ type: "text", text: header + result.value.text }],
+        details: { url, charCount, truncated },
       };
     },
   });
