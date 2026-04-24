@@ -12,6 +12,7 @@
 import { randomBytes } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { createQueue, writeQueue } from "../../lib/task-queue.js";
 import {
@@ -35,6 +36,19 @@ import {
 
 /** Directory name for agent config files within the team base dir. */
 export const CONFIG_DIR_NAME = ".team-configs";
+
+/**
+ * Absolute path to the board TUI script. Resolved from this module's
+ * own URL so the path stays correct whether my-pi is used in-tree or
+ * installed as a package. The script is plain Node ESM — no transpile,
+ * no extra deps — so tmux can just run `node <path>` in the board
+ * pane on every team launch.
+ */
+const BOARD_SCRIPT_PATH = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "team-agent",
+  "board.mjs",
+);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -229,9 +243,11 @@ export async function launchTeam(
   });
   if (!sessionResult.ok) return sessionResult;
 
+  // Render the queue as a live TUI board. board.mjs drives its own
+  // fs.watch + 1s refresh so we don't need `watch(1)` wrapping.
   await sendKeys(
     ctx, tmuxSession, "board",
-    `watch -n 2 'cat ${sq(queuePath)} | python3 -m json.tool 2>/dev/null || echo "Waiting for queue..."'`,
+    `node ${sq(BOARD_SCRIPT_PATH)} ${sq(queuePath)}`,
   );
 
   const initialPrompt = buildPermanentAgentPrompt(goal);
