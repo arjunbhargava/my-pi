@@ -54,4 +54,8 @@ echo "--- checkpoint-commit ---"
 npx tsx "$PROJECT_DIR/tests/checkpoint-commit.test.ts"
 echo ""
 
+echo "--- websearch ---"
+npx tsx "$PROJECT_DIR/tests/websearch.test.ts"
+echo ""
+
 echo "=== All unit tests passed ==="

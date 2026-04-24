@@ -1,0 +1,6 @@
+{
+  "name": "pi-websearch",
+  "pi": {
+    "extensions": ["./websearch.ts"]
+  }
+}
