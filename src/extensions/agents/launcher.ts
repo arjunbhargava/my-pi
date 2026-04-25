@@ -14,6 +14,8 @@ import { mkdir, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { collectPropagatedEnvVars } from "./env-propagation.js";
+
 import { createQueue, writeQueue } from "../../lib/task-queue.js";
 import {
   createSession,
@@ -131,10 +133,18 @@ export async function writeAgentLaunchScript(
   if (agentDef.model) piInvocation.push("--model", sq(agentDef.model));
   if (initialPrompt) piInvocation.push(sq(initialPrompt));
 
+  // Propagate API keys / tokens from the current process so spawned
+  // agents can authenticate with LLM providers and tool services.
+  const propagatedVars = collectPropagatedEnvVars();
+  const envExportLines = Object.entries(propagatedVars).map(
+    ([key, value]) => `export ${key}=${sq(value)}`,
+  );
+
   const lines: string[] = [
     "#!/usr/bin/env bash",
     `LOGFILE=${sq(logPath)}`,
     `echo "[$(date)] Agent ${agentName} starting" >> "$LOGFILE"`,
+    ...envExportLines,
     `export ${AGENT_CONFIG_ENV_VAR}=${sq(configPath)}`,
     "",
     piInvocation.join(" "),
