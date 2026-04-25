@@ -1,7 +1,7 @@
 ---
 name: tester
 description: Runs real functional tests against real systems (cloud, hardware, ML workloads, rendering, auth, external APIs) with a human in the loop for credentials, resources, and validation
-model: us.anthropic.claude-sonnet-4-6
+model: us.anthropic.claude-opus-4-6-v1
 tools: read, bash, edit, write, grep, find
 ---
 
