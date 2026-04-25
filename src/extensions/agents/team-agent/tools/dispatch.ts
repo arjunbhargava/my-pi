@@ -259,7 +259,7 @@ async function handleMonitor(
   return {
     content: [{
       type: "text" as const,
-      text: `Monitor timed out after ${Math.round(timeoutMs / 1000)}s. Current state:\n${summary}`,
+      text: `Monitor timed out after ${Math.round(timeoutMs / 1000)}s with no changes. Call monitor_tasks again to keep watching \u2014 new work can arrive at any time. Current state:\n${summary}`,
     }],
     details: {},
   };

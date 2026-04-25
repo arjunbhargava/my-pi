@@ -129,7 +129,7 @@ async function handleWait(
     return {
       content: [{
         type: "text" as const,
-        text: `No tasks in review yet (timed out). Current state:\n${summary}`,
+        text: `No tasks in review yet (timed out). New tasks can arrive at any time — call wait_for_reviews again to keep watching. Current state:\n${summary}`,
       }],
       details: {},
     };

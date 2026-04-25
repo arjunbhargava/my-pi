@@ -180,7 +180,7 @@ export function registerQueueTools(pi: ExtensionAPI, runtime: TeamAgentRuntime):
         return {
           content: [{
             type: "text",
-            text: `No merges yet (timed out after ${Math.round(timeoutMs / 1000)}s).\n\n${getQueueSummary(current)}`,
+            text: `No merges yet (timed out after ${Math.round(timeoutMs / 1000)}s). New tasks can be added at any time \u2014 call wait_for_merges again to keep watching.\n\n${getQueueSummary(current)}`,
           }],
           details: {},
         };
