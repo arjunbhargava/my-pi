@@ -17,5 +17,6 @@ export default function websearchExtension(pi: ExtensionAPI): void {
     Type.String,
     Type.Optional,
     Type.Integer,
+    Type.Boolean,
   );
 }

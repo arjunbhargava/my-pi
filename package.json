@@ -13,6 +13,8 @@
     ]
   },
   "devDependencies": {
+    "@browserbasehq/sdk": "^2.10.0",
+    "playwright-core": "^1.59.1",
     "@mariozechner/pi-coding-agent": "^0.67.6",
     "@sinclair/typebox": "^0.34.49",
     "@types/proper-lockfile": "^4.1.4",

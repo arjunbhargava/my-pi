@@ -19,6 +19,12 @@ export const DEFAULT_FETCH_MAX_CHARS = 6000;
 /** Environment variable name for the Tavily API key. */
 export const TAVILY_API_KEY_ENV = "TAVILY_API_KEY";
 
+/** Environment variable name for the Browserbase API key. */
+export const BROWSERBASE_API_KEY_ENV = "BROWSERBASE_API_KEY";
+
+/** Default navigation timeout for browser sessions in milliseconds. */
+export const DEFAULT_BROWSE_TIMEOUT_MS = 30_000;
+
 // ---------------------------------------------------------------------------
 // Interfaces
 // ---------------------------------------------------------------------------

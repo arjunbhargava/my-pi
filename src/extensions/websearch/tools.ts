@@ -7,19 +7,21 @@
 
 import { searchWeb } from "./search.js";
 import { fetchPageText } from "./fetch.js";
-import { DEFAULT_FETCH_MAX_CHARS, DEFAULT_RESULT_COUNT, TAVILY_API_KEY_ENV, type SearchResponse } from "./types.js";
+import { browsePageText } from "./browse.js";
+import { BROWSERBASE_API_KEY_ENV, DEFAULT_FETCH_MAX_CHARS, DEFAULT_RESULT_COUNT, TAVILY_API_KEY_ENV, type SearchResponse } from "./types.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- pi's registerTool uses complex generic types from typebox
 type ToolRegistrar = (def: any) => void;
 
 /**
- * Register the web_search and web_fetch tools.
+ * Register the web_search, web_fetch, and web_browse tools.
  *
- * @param register    - The `pi.registerTool` function.
- * @param TypeObject  - `Type.Object` from typebox.
- * @param TypeString  - `Type.String` from typebox.
+ * @param register     - The `pi.registerTool` function.
+ * @param TypeObject   - `Type.Object` from typebox.
+ * @param TypeString   - `Type.String` from typebox.
  * @param TypeOptional - `Type.Optional` from typebox.
  * @param TypeInteger  - `Type.Integer` from typebox.
+ * @param TypeBoolean  - `Type.Boolean` from typebox.
  */
 export function registerWebSearchTools(
   register: ToolRegistrar,
@@ -28,8 +30,10 @@ export function registerWebSearchTools(
   TypeString: (...args: any[]) => any,
   TypeOptional: (...args: any[]) => any,
   TypeInteger: (...args: any[]) => any,
+  TypeBoolean: (...args: any[]) => any,
 ): void {
   registerWebFetchTool(register, TypeObject, TypeString, TypeOptional, TypeInteger);
+  registerWebBrowseTool(register, TypeObject, TypeString, TypeOptional, TypeInteger, TypeBoolean);
 
   register({
     name: "web_search",
@@ -72,6 +76,88 @@ export function registerWebSearchTools(
       return {
         content: [{ type: "text", text: formatSearchOutput(result.value) }],
         details: { resultCount: result.value.results.length, hasAnswer: result.value.answer !== undefined },
+      };
+    },
+  });
+}
+
+function registerWebBrowseTool(
+  register: ToolRegistrar,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- typebox schema constructors
+  TypeObject: (...args: any[]) => any,
+  TypeString: (...args: any[]) => any,
+  TypeOptional: (...args: any[]) => any,
+  TypeInteger: (...args: any[]) => any,
+  TypeBoolean: (...args: any[]) => any,
+): void {
+  register({
+    name: "web_browse",
+    label: "Web Browse",
+    description:
+      "Open a cloud browser to fetch JS-rendered page content. Handles Cloudflare " +
+      "protection, CAPTCHAs, and JavaScript-heavy SPAs that web_fetch cannot access. " +
+      "Returns extracted text, same format as web_fetch. Slower (~5-15s) and costs " +
+      "Browserbase credits — use web_fetch first, fall back to web_browse when blocked.",
+    promptSnippet: "Browse a URL using a cloud browser with JS rendering and Cloudflare bypass.",
+    promptGuidelines: [
+      "Use web_browse only when web_fetch fails (blocked by Cloudflare, empty content, or JS-rendered SPA).",
+      "web_browse is slower (~5-15s) and costs cloud credits. Always try web_fetch first.",
+      "Set extractSelector to 'main' or 'article' to skip navigation/footer boilerplate.",
+    ],
+    parameters: TypeObject({
+      url: TypeString({ description: "URL to navigate to" }),
+      maxChars: TypeOptional(TypeInteger({ description: "Max characters to extract, default 6000" })),
+      extractSelector: TypeOptional(TypeString({
+        description: "CSS selector to extract text from. Default 'body'. Use 'main' or 'article' to skip nav/footer.",
+      })),
+      waitForSelector: TypeOptional(TypeString({
+        description: "CSS selector to wait for before extracting, e.g. '#content', '.article-body'",
+      })),
+      useProxy: TypeOptional(TypeBoolean({
+        description: "Route through residential proxies for Cloudflare bypass. Default true.",
+      })),
+    }),
+
+    async execute(_toolCallId: string, params: Record<string, unknown>) {
+      const apiKey = process.env[BROWSERBASE_API_KEY_ENV];
+      if (!apiKey) {
+        return {
+          content: [{ type: "text", text: "BROWSERBASE_API_KEY environment variable is not set." }],
+          details: {},
+          isError: true,
+        };
+      }
+
+      const url = params.url as string;
+      const maxChars = typeof params.maxChars === "number" ? params.maxChars : DEFAULT_FETCH_MAX_CHARS;
+      const extractSelector = typeof params.extractSelector === "string" ? params.extractSelector : undefined;
+      const waitForSelector = typeof params.waitForSelector === "string" ? params.waitForSelector : undefined;
+      const useProxy = typeof params.useProxy === "boolean" ? params.useProxy : true;
+
+      const result = await browsePageText({
+        url, apiKey, maxChars, extractSelector, waitForSelector, useProxy,
+      });
+
+      if (!result.ok) {
+        return {
+          content: [{ type: "text", text: `Browse failed: ${result.error}` }],
+          details: {},
+          isError: true,
+        };
+      }
+
+      const { charCount, truncated, sessionId } = result.value;
+      const truncatedNote = truncated ? ", truncated" : "";
+      const header = [
+        `[Browsed: ${url}]`,
+        `[${charCount} chars extracted${truncatedNote}]`,
+        `[Session: https://browserbase.com/sessions/${sessionId}]`,
+        "",
+      ].join("\n");
+
+      return {
+        content: [{ type: "text", text: header + result.value.text }],
+        details: { url, charCount, truncated, sessionId },
       };
     },
   });

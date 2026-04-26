@@ -43,6 +43,7 @@ function captureWebSearchTool(): { execute: (id: string, params: Record<string, 
     (opts: unknown) => ({ type: "string", ...opts as object }),
     (inner: unknown) => ({ optional: true, ...(inner as object) }),
     (opts: unknown) => ({ type: "integer", ...opts as object }),
+    (opts: unknown) => ({ type: "boolean", ...opts as object }),
   );
   return captured;
 }
