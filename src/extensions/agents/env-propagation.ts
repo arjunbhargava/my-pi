@@ -36,6 +36,7 @@ const PROVIDER_PREFIXES: readonly string[] = [
   "REPLICATE",
   "TOGETHER",
   "BEDROCK",
+  "BROWSERBASE",
   "VERTEX",
   "OLLAMA",
 ];

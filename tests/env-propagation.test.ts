@@ -140,6 +140,19 @@ test("prefix anchoring: NOTAVILY_KEY does not match TAVILY prefix", () => {
   }
 });
 
+test("BROWSERBASE prefix is propagated", () => {
+  process.env["BROWSERBASE_API_KEY"] = "bb-test";
+  process.env["BROWSERBASE_PROJECT_ID"] = "proj-123";
+  try {
+    const vars = collectPropagatedEnvVars();
+    assert.equal(vars["BROWSERBASE_API_KEY"], "bb-test");
+    assert.equal(vars["BROWSERBASE_PROJECT_ID"], "proj-123");
+  } finally {
+    delete process.env["BROWSERBASE_API_KEY"];
+    delete process.env["BROWSERBASE_PROJECT_ID"];
+  }
+});
+
 test("prefix anchoring: XOPENAI_TOKEN does not match OPENAI prefix", () => {
   process.env["XOPENAI_TOKEN"] = "should-not-propagate";
   try {
