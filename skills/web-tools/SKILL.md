@@ -27,8 +27,22 @@ Parameters:
 
 No API key needed. No credits consumed.
 
+### `web_browse`
+
+Opens a Browserbase cloud browser to fetch JS-rendered page content. Handles Cloudflare protection, CAPTCHAs, and JavaScript-heavy SPAs. Returns extracted text in the same format as `web_fetch`.
+
+Parameters:
+- `url` (required) — URL to navigate to
+- `maxChars` (optional) — maximum characters to extract, default 6000
+- `extractSelector` (optional) — CSS selector to extract text from, default `"body"`. Use `"main"` or `"article"` to skip nav/footer.
+- `waitForSelector` (optional) — CSS selector to wait for before extracting, e.g. `"#content"`
+- `useProxy` (optional) — route through residential proxies for Cloudflare bypass, default true
+
+Requires `BROWSERBASE_API_KEY` environment variable. Costs Browserbase credits per session.
+
 ## Workflow
 
 1. **Search first.** Snippets from `web_search` are often sufficient.
-2. **Fetch only if needed.** If snippets lack the detail you need, call `web_fetch` on the single most relevant URL.
-3. **Do not speculatively fetch multiple URLs.** Read what you get; fetch more only if that one result is still insufficient.
+2. **Fetch if needed.** If snippets lack detail, call `web_fetch` on the most relevant URL.
+3. **Browse if blocked.** If `web_fetch` fails (Cloudflare block, empty content, JS-rendered SPA), use `web_browse`.
+4. **Do not speculatively browse multiple URLs.** `web_browse` is slower and costs credits.

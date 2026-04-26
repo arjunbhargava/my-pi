@@ -18,9 +18,9 @@ Our current web tools extension provides two thin, synchronous primitives: a Tav
 | Entity discovery | None | FindAll API: natural-language entity generation + validation + enrichment | Entire category missing |
 | Change monitoring | None | Monitor API: scheduled queries, webhook delivery | Entire category missing |
 | PDF handling | Rejected with "Unsupported content type" | Extract API: PDFs converted to LLM-ready markdown automatically | PDFs silently fail today |
-| JS-heavy SPA rendering | None — static HTTP GET returns empty/boilerplate for React/Vue/Next apps | Extract API: headless rendering, handles any public URL | SPAs return garbage today |
+| JS-heavy SPA rendering | `web_browse` via Browserbase (Addressed by `web_browse` tool — single-page extraction via Browserbase) | Extract API: headless rendering, handles any public URL | Objective-focused ranking still missing; PDF not yet supported |
 | Objective-focused extraction | None — positional `slice(0, maxChars)` | Extract API: excerpt ranking aligned to `objective`; returns only relevant sections | Relevance ranking missing |
-| Browser automation | None | Browser Use MCP: cloud-hosted browser for authenticated pages, form filling, multi-step navigation | Entire category missing |
+| Browser automation | `web_browse` handles single-page JS rendering and Cloudflare bypass (Addressed by `web_browse` tool — single-page extraction via Browserbase); interactive multi-step navigation remains absent | Browser Use MCP: cloud-hosted browser for authenticated pages, form filling, multi-step navigation | Interactive/authenticated browser automation still missing |
 | Authenticated content | None | Browser Use MCP + saved login profiles | Entirely absent |
 | Session tracking | None | `session_id` on every Search/Extract call; server echoes it back for correlation | No cross-call correlation |
 | Freshness control | None | `source_policy.freshness_date` on Search + Task | Cannot restrict to recent content |
@@ -42,7 +42,9 @@ Our current web tools extension provides two thin, synchronous primitives: a Tav
 
 ### Critical Gaps
 
-#### 1. JS-Heavy Page Rendering
+#### 1. JS-Heavy Page Rendering — **Addressed**
+
+> **Status:** The `web_browse` tool (backed by Browserbase) now handles JS-rendered SPAs and Cloudflare-protected pages. Single-page extraction is resolved. See `skills/web-tools/SKILL.md` for usage.
 
 `fetch.ts` issues a plain `fetch()` GET. JavaScript-rendered SPAs (React, Next.js, Vue, Angular) return an empty shell with `<div id="root"></div>` and no visible content. Docs sites, dashboards, and most modern product pages fall into this category.
 
@@ -103,7 +105,9 @@ No way to restrict searches or extractions to specific domains, or to require re
 - Affected files: `search.ts` (extend request body), `tools.ts` (extend schema), `types.ts`.
 - **Complexity:** Small for domain filtering (Tavily already supports it); Medium for freshness (requires Parallel Search).
 
-#### 6. Browser Automation for Authenticated Content
+#### 6. Browser Automation for Authenticated Content — **Remains Open**
+
+> **Status:** `web_browse` addresses JS rendering and Cloudflare bypass for *public* pages. Interactive browser automation (form filling, login flows, multi-step navigation) is **not yet implemented**. Browser Use MCP remains the recommended path when this use case arises.
 
 There is no mechanism to access pages that require login, session cookies, OAuth tokens, or paywalls. Examples: internal Notion docs, LinkedIn profile pages, Salesforce records, Substack articles.
 
