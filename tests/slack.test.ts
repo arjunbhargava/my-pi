@@ -10,6 +10,7 @@
 import { strict as assert } from "node:assert";
 
 import {
+  getAuthTest,
   getConversationHistory,
   getConversationReplies,
   postMessage,
@@ -258,6 +259,32 @@ test("getConversationHistory returns ok:false when Slack API returns ok:false", 
       assert.equal(result.error, "not_in_channel");
     },
   );
+});
+
+// ---------------------------------------------------------------------------
+// getAuthTest tests
+// ---------------------------------------------------------------------------
+
+test("getAuthTest sends Authorization header and returns userId and teamId", async () => {
+  const { mock, calls } = capturingFetch(200, {
+    ok: true,
+    user_id: "UBOT001",
+    team_id: "T0123",
+  });
+
+  await withFetch(mock as typeof fetch, async () => {
+    const result = await getAuthTest("xoxb-test-token");
+    assert.ok(result.ok);
+    if (!result.ok) return;
+    assert.equal(result.value.userId, "UBOT001");
+    assert.equal(result.value.teamId, "T0123");
+  });
+
+  assert.equal(calls.length, 1);
+  const { url, init } = calls[0];
+  assert.equal(url, "https://slack.com/api/auth.test");
+  const headers = init?.headers as Record<string, string>;
+  assert.equal(headers["Authorization"], "Bearer xoxb-test-token");
 });
 
 // ---------------------------------------------------------------------------

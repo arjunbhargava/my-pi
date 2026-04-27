@@ -123,6 +123,11 @@ interface PostMessageResponse extends SlackApiResponse {
   message?: { ts?: string };
 }
 
+interface AuthTestResponse extends SlackApiResponse {
+  user_id?: string;
+  team_id?: string;
+}
+
 interface ConversationsResponse extends SlackApiResponse {
   messages?: Array<{
     ts: string;
@@ -170,6 +175,40 @@ function buildQuery(params: Record<string, string | undefined>): string {
 // ---------------------------------------------------------------------------
 // Exported functions
 // ---------------------------------------------------------------------------
+
+/**
+ * Call auth.test to resolve the bot's own user and team IDs.
+ *
+ * @param botToken - Bot user OAuth token.
+ * @returns The bot's user ID and team ID, or an error.
+ */
+export async function getAuthTest(
+  botToken: string,
+): Promise<Result<{ userId: string; teamId: string }>> {
+  let response: Response;
+  try {
+    response = await fetch(`${SLACK_API}/auth.test`, {
+      headers: authHeaders(botToken),
+    });
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+
+  if (!response.ok) {
+    return { ok: false, error: `HTTP ${response.status}` };
+  }
+
+  const data = (await response.json()) as AuthTestResponse;
+  if (!data.ok) {
+    return { ok: false, error: data.error ?? "unknown_error" };
+  }
+
+  if (!data.user_id || !data.team_id) {
+    return { ok: false, error: "missing user_id or team_id in response" };
+  }
+
+  return { ok: true, value: { userId: data.user_id, teamId: data.team_id } };
+}
 
 /**
  * Post a message to the configured channel.
