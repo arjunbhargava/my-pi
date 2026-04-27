@@ -62,4 +62,8 @@ echo "--- websearch-fetch ---"
 npx tsx "$PROJECT_DIR/tests/websearch-fetch.test.ts"
 echo ""
 
+echo "--- bridge-events ---"
+npx tsx "$PROJECT_DIR/tests/bridge-events.test.ts"
+echo ""
+
 echo "=== All unit tests passed ==="

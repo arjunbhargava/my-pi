@@ -14,17 +14,14 @@ import { readFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import * as lockfile from "proper-lockfile";
 
 import type { TaskQueue } from "../src/lib/types.js";
 import type { SlackBlock } from "../src/lib/slack.js";
 import { getAuthTest, getConversationReplies, postMessage } from "../src/lib/slack.js";
-import { diffQueues } from "../src/lib/queue-diff.js";
 import {
-  formatQueueEvent,
   formatTeamSummary,
-  formatWorkerThreadHeader,
-  formatCodeDiff,
 } from "../src/lib/slack-format.js";
 import {
   createThreadState,
@@ -33,6 +30,8 @@ import {
   threadStatePath,
 } from "../src/lib/slack-threads.js";
 import type { ThreadState } from "../src/lib/slack-threads.js";
+import { processEvents } from "../src/lib/bridge-events.js";
+import type { PostFn } from "../src/lib/bridge-events.js";
 import {
   filterNewMessages,
   parseInboundMessage,
@@ -221,70 +220,8 @@ async function pollInbound(
 }
 
 // ---------------------------------------------------------------------------
-// Event processing
+// Event processing — see src/lib/bridge-events.ts
 // ---------------------------------------------------------------------------
-
-type PostFn = (
-  blocks: SlackBlock[],
-  text: string,
-  threadTs?: string,
-) => Promise<string | null>;
-
-async function processEvents(
-  queue: TaskQueue,
-  previousQueue: TaskQueue,
-  state: ThreadState,
-  post: PostFn,
-  repoDir: string,
-): Promise<void> {
-  const events = diffQueues(previousQueue, queue);
-
-  for (const event of events) {
-    const blocks = formatQueueEvent(event);
-
-    if (event.type === "task_dispatched") {
-      const task = event.task;
-      if (task === undefined) continue;
-      const headerBlocks = formatWorkerThreadHeader(task);
-      const ts = await post(headerBlocks, event.title);
-      if (ts !== null) {
-        state.taskThreads[event.taskId] = ts;
-      }
-      continue;
-    }
-
-    if (event.type === "task_completed") {
-      const task = event.task;
-      const threadTs = state.taskThreads[event.taskId];
-      let diffBlocks: SlackBlock[] = [];
-      if (task?.branchName !== undefined && task?.branchName.length > 0) {
-        const diffOutput = await fetchGitDiff(repoDir, queue.targetBranch, task.branchName);
-        diffBlocks = formatCodeDiff(diffOutput);
-      }
-      await post([...blocks, ...diffBlocks], event.title, threadTs);
-      if (threadTs !== undefined) {
-        state.lastPostedTs[event.taskId] = threadTs;
-      }
-      continue;
-    }
-
-    if (
-      event.type === "task_closed" ||
-      event.type === "task_rejected" ||
-      event.type === "task_recovered"
-    ) {
-      const threadTs = state.taskThreads[event.taskId];
-      await post(blocks, event.title, threadTs);
-      continue;
-    }
-
-    if (event.type === "task_added") {
-      const teamTs = state.teamMessageTs ?? undefined;
-      await post(blocks, event.title, teamTs);
-      continue;
-    }
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Main
@@ -396,7 +333,7 @@ async function main(): Promise<void> {
       pending = false;
       const queue = await readQueueFile(queuePath);
       if (queue === null) return;
-      await processEvents(queue, previousQueue, state, post, repoDir);
+      await processEvents(queue, previousQueue, state, post, repoDir, fetchGitDiff);
       await saveThreadState(sidecarPath, state);
       previousQueue = queue;
     });
@@ -419,7 +356,12 @@ async function main(): Promise<void> {
   process.on("SIGTERM", () => { void shutdown(); });
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+const isDirectRun = process.argv[1] !== undefined &&
+  fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
+
+if (isDirectRun) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}
