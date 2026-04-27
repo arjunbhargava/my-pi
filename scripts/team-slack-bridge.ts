@@ -15,32 +15,19 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import * as lockfile from "proper-lockfile";
-
 import type { TaskQueue } from "../src/lib/types.js";
 import type { SlackBlock } from "../src/lib/slack.js";
-import { getAuthTest, getConversationReplies, postMessage } from "../src/lib/slack.js";
-import {
-  formatTeamSummary,
-} from "../src/lib/slack-format.js";
+import { getAuthTest, postMessage } from "../src/lib/slack.js";
+import { formatTeamSummary } from "../src/lib/slack-format.js";
 import {
   createThreadState,
   loadThreadState,
   saveThreadState,
   threadStatePath,
+  type ThreadState,
 } from "../src/lib/slack-threads.js";
-import type { ThreadState } from "../src/lib/slack-threads.js";
-import { processEvents } from "../src/lib/bridge-events.js";
-import type { PostFn } from "../src/lib/bridge-events.js";
-import {
-  filterNewMessages,
-  parseInboundMessage,
-} from "../src/lib/slack-inbound.js";
-import {
-  addTask,
-  readQueue,
-  writeQueue,
-} from "../src/lib/task-queue.js";
+import { processEvents, type PostFn } from "../src/lib/bridge-events.js";
+import { pollInbound } from "../src/lib/bridge-inbound.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -117,111 +104,6 @@ async function readQueueFile(queuePath: string): Promise<TaskQueue | null> {
     return null;
   }
 }
-
-// ---------------------------------------------------------------------------
-// Queue locking
-// ---------------------------------------------------------------------------
-
-/** Run a queue mutation under an advisory file lock (load-mutate-save is atomic). */
-async function withQueueFileLock<T>(
-  queuePath: string,
-  fn: (queue: TaskQueue) => Promise<T> | T,
-): Promise<T> {
-  const release = await lockfile.lock(queuePath, {
-    retries: { retries: 10, minTimeout: 50, maxTimeout: 500, factor: 1.5 },
-    stale: 10_000,
-  });
-  try {
-    const result = await readQueue(queuePath);
-    if (!result.ok) throw new Error(result.error);
-    const queue = result.value;
-    const value = await fn(queue);
-    const writeResult = await writeQueue(queuePath, queue);
-    if (!writeResult.ok) throw new Error(writeResult.error);
-    return value;
-  } finally {
-    await release();
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Inbound polling
-// ---------------------------------------------------------------------------
-
-/** Poll all active threads for new user messages and apply them to the queue. */
-async function pollInbound(
-  queuePath: string,
-  state: ThreadState,
-  post: PostFn,
-  slackConfig: { botToken: string; channelId: string },
-  botUserId: string,
-): Promise<void> {
-  for (const [taskId, threadTs] of Object.entries(state.taskThreads)) {
-    const oldest = state.lastSeenTs[threadTs];
-    const result = await getConversationReplies(slackConfig, threadTs, { oldest });
-    if (!result.ok) {
-      console.error(`Failed to fetch replies for task ${taskId}: ${result.error}`);
-      continue;
-    }
-    const newMessages = filterNewMessages(result.value, oldest, botUserId);
-    for (const msg of newMessages) {
-      const action = parseInboundMessage({ source: { type: "task", taskId }, text: msg.text });
-      if (action.kind === "feedback") {
-        try {
-          await withQueueFileLock(queuePath, (queue) => {
-            const task = queue.tasks.find((t) => t.id === taskId);
-            if (task !== undefined) {
-              const prior = task.feedback !== undefined ? task.feedback + "\n\n" : "";
-              task.feedback = prior + action.text;
-              task.updatedAt = Date.now();
-            }
-          });
-        } catch (err) {
-          console.error(`Failed to append feedback for task ${taskId}: ${String(err)}`);
-        }
-        await post([], `💬 Feedback noted for task ${taskId}`, threadTs);
-      }
-      if (msg.ts > (state.lastSeenTs[threadTs] ?? "")) {
-        state.lastSeenTs[threadTs] = msg.ts;
-      }
-    }
-  }
-
-  if (state.teamMessageTs !== null) {
-    const teamTs = state.teamMessageTs;
-    const oldest = state.lastSeenTs[teamTs];
-    const result = await getConversationReplies(slackConfig, teamTs, { oldest });
-    if (!result.ok) {
-      console.error(`Failed to fetch team thread replies: ${result.error}`);
-      return;
-    }
-    const newMessages = filterNewMessages(result.value, oldest, botUserId);
-    for (const msg of newMessages) {
-      const action = parseInboundMessage({ source: { type: "team" }, text: msg.text });
-      if (action.kind === "add_task") {
-        let taskId = "";
-        try {
-          await withQueueFileLock(queuePath, (queue) => {
-            const task = addTask(queue, action.title, action.description, "slack-user");
-            taskId = task.id;
-          });
-        } catch (err) {
-          console.error(`Failed to add task from Slack: ${String(err)}`);
-        }
-        if (taskId !== "") {
-          await post([], `📋 Task added: ${action.title} (id: ${taskId})`, teamTs);
-        }
-      }
-      if (msg.ts > (state.lastSeenTs[teamTs] ?? "")) {
-        state.lastSeenTs[teamTs] = msg.ts;
-      }
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Event processing — see src/lib/bridge-events.ts
-// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // Main
