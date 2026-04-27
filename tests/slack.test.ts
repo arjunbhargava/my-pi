@@ -192,6 +192,75 @@ test("getConversationReplies with oldest includes it in the URL", async () => {
 });
 
 // ---------------------------------------------------------------------------
+// getConversationHistory tests
+// ---------------------------------------------------------------------------
+
+test("getConversationHistory sends correct query params and returns parsed messages", async () => {
+  const { mock, calls } = capturingFetch(200, {
+    ok: true,
+    messages: [
+      { ts: "1700000000.000001", text: "hello", user: "U001" },
+      { ts: "1700000000.000002", text: "from bot", bot_id: "B001" },
+    ],
+  });
+
+  await withFetch(mock as typeof fetch, async () => {
+    const result = await getConversationHistory(config);
+    assert.ok(result.ok);
+    if (!result.ok) return;
+    assert.equal(result.value.length, 2);
+    assert.equal(result.value[0].text, "hello");
+    assert.equal(result.value[0].user, "U001");
+    assert.equal(result.value[1].botId, "B001");
+  });
+
+  const url = new URL(calls[0].url);
+  assert.equal(url.pathname, "/api/conversations.history");
+  assert.equal(url.searchParams.get("channel"), "C0123456789");
+});
+
+test("getConversationHistory with oldest includes it in the URL", async () => {
+  const { mock, calls } = capturingFetch(200, { ok: true, messages: [] });
+
+  await withFetch(mock as typeof fetch, async () => {
+    await getConversationHistory(config, { oldest: "1700000000.000050" });
+  });
+
+  const url = new URL(calls[0].url);
+  assert.equal(url.searchParams.get("oldest"), "1700000000.000050");
+});
+
+test("getConversationHistory with limit includes it in the URL as a string", async () => {
+  const { mock, calls } = capturingFetch(200, { ok: true, messages: [] });
+
+  await withFetch(mock as typeof fetch, async () => {
+    await getConversationHistory(config, { limit: 50 });
+  });
+
+  const url = new URL(calls[0].url);
+  assert.equal(url.searchParams.get("limit"), "50");
+});
+
+test("getConversationHistory returns ok:false on non-200 HTTP status", async () => {
+  await withFetch(jsonFetch(500, { ok: false }) as typeof fetch, async () => {
+    const result = await getConversationHistory(config);
+    assert.ok(!result.ok);
+    assert.ok(result.error.includes("500"));
+  });
+});
+
+test("getConversationHistory returns ok:false when Slack API returns ok:false", async () => {
+  await withFetch(
+    jsonFetch(200, { ok: false, error: "not_in_channel" }) as typeof fetch,
+    async () => {
+      const result = await getConversationHistory(config);
+      assert.ok(!result.ok);
+      assert.equal(result.error, "not_in_channel");
+    },
+  );
+});
+
+// ---------------------------------------------------------------------------
 // Network error test
 // ---------------------------------------------------------------------------
 
