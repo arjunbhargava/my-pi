@@ -132,6 +132,33 @@ interface ConversationsResponse extends SlackApiResponse {
   }>;
 }
 
+async function fetchMessages(url: string, botToken: string): Promise<Result<SlackMessage[]>> {
+  let response: Response;
+  try {
+    response = await fetch(url, { headers: authHeaders(botToken) });
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+
+  if (!response.ok) {
+    return { ok: false, error: `HTTP ${response.status}` };
+  }
+
+  const data = (await response.json()) as ConversationsResponse;
+  if (!data.ok) {
+    return { ok: false, error: data.error ?? "unknown_error" };
+  }
+
+  const messages = (data.messages ?? []).map((m) => ({
+    ts: m.ts,
+    text: m.text,
+    user: m.user,
+    botId: m.bot_id,
+  }));
+
+  return { ok: true, value: messages };
+}
+
 function buildQuery(params: Record<string, string | undefined>): string {
   const entries = Object.entries(params).filter(
     (e): e is [string, string] => e[1] !== undefined,
@@ -209,32 +236,7 @@ export async function getConversationReplies(
     oldest: options?.oldest,
   });
 
-  let response: Response;
-  try {
-    response = await fetch(`${SLACK_API}/conversations.replies${query}`, {
-      headers: authHeaders(config.botToken),
-    });
-  } catch (err) {
-    return { ok: false, error: String(err) };
-  }
-
-  if (!response.ok) {
-    return { ok: false, error: `HTTP ${response.status}` };
-  }
-
-  const data = (await response.json()) as ConversationsResponse;
-  if (!data.ok) {
-    return { ok: false, error: data.error ?? "unknown_error" };
-  }
-
-  const messages = (data.messages ?? []).map((m) => ({
-    ts: m.ts,
-    text: m.text,
-    user: m.user,
-    botId: m.bot_id,
-  }));
-
-  return { ok: true, value: messages };
+  return fetchMessages(`${SLACK_API}/conversations.replies${query}`, config.botToken);
 }
 
 /**
@@ -254,30 +256,5 @@ export async function getConversationHistory(
     limit: options?.limit !== undefined ? String(options.limit) : undefined,
   });
 
-  let response: Response;
-  try {
-    response = await fetch(`${SLACK_API}/conversations.history${query}`, {
-      headers: authHeaders(config.botToken),
-    });
-  } catch (err) {
-    return { ok: false, error: String(err) };
-  }
-
-  if (!response.ok) {
-    return { ok: false, error: `HTTP ${response.status}` };
-  }
-
-  const data = (await response.json()) as ConversationsResponse;
-  if (!data.ok) {
-    return { ok: false, error: data.error ?? "unknown_error" };
-  }
-
-  const messages = (data.messages ?? []).map((m) => ({
-    ts: m.ts,
-    text: m.text,
-    user: m.user,
-    botId: m.bot_id,
-  }));
-
-  return { ok: true, value: messages };
+  return fetchMessages(`${SLACK_API}/conversations.history${query}`, config.botToken);
 }
