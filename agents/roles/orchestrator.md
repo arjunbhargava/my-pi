@@ -1,7 +1,7 @@
 ---
 name: orchestrator
 description: Decomposes goals into well-scoped tasks, dispatches workers, monitors progress, and keeps the plan coherent as work lands
-model: us.anthropic.claude-opus-4-6-v1
+model: us.anthropic.claude-opus-4-7
 tools: read, grep, find, ls, bash
 capabilities: dispatch
 ---
