@@ -14,7 +14,6 @@ import {
   dispatchTask,
   getQueueSummary,
   getTasksByStatus,
-  readQueue,
   recoverTask,
 } from "../../../../lib/task-queue.js";
 import { capturePane } from "../../../../lib/tmux.js";
@@ -29,8 +28,8 @@ import { watchQueueUntil } from "../watch.js";
 /** Default worker agent type when dispatch_task is called without one. */
 const DEFAULT_WORKER_TYPE = "implementer";
 
-/** Default timeout (seconds) for monitor_tasks. */
-const MONITOR_DEFAULT_TIMEOUT_SEC = 120;
+/** Per-cycle timeout for the internal monitor loop (ms). */
+const MONITOR_CYCLE_MS = 30 * 60 * 1000;
 
 /**
  * How often monitor_tasks re-runs dead-worker detection even without a
@@ -73,15 +72,10 @@ export function registerDispatchTools(pi: ExtensionAPI, runtime: TeamAgentRuntim
     name: "monitor_tasks",
     label: "Monitor Tasks",
     description:
-      "Wait for task queue changes. Also checks worker health each cycle — if a worker's tmux window has died, its task is automatically recovered and requeued. Times out after timeoutSeconds (default 120). Call again to keep monitoring.",
-    parameters: Type.Object({
-      timeoutSeconds: Type.Optional(
-        Type.Number({ description: "Max seconds to wait. Default 120." }),
-      ),
-    }),
-    async execute(_id, params, signal) {
-      const timeoutMs = (params.timeoutSeconds ?? MONITOR_DEFAULT_TIMEOUT_SEC) * 1000;
-      return await handleMonitor(runtime, timeoutMs, signal);
+      "Wait for task queue changes. Also checks worker health each cycle — if a worker's tmux window has died, its task is automatically recovered and requeued. Retries internally on timeout — only returns when there is a meaningful change or the session ends.",
+    parameters: Type.Object({}),
+    async execute(_id, _params, signal) {
+      return await handleMonitor(runtime, signal);
     },
   });
 
@@ -201,7 +195,6 @@ async function findWorkerDefinition(agentsDirs: string[], workerType: string) {
 
 async function handleMonitor(
   runtime: TeamAgentRuntime,
-  timeoutMs: number,
   signal: AbortSignal | undefined,
 ) {
   // Baseline the current state before entering the wait so we only
@@ -210,57 +203,55 @@ async function handleMonitor(
   let lastSignature = signQueue(initial);
   let finalMessage: string | null = null;
 
-  const outcome = await watchQueueUntil(
-    runtime.queuePath,
-    async (queue) => {
-      // First: reap workers whose tmux windows have vanished. Detection
-      // and git cleanup happen unlocked so other agents can still
-      // mutate the queue; only the final recoverTask mutation takes
-      // the lock. Heartbeat gives us a wake even without a queue write.
-      const dead = await detectDeadWorkers(runtime, queue);
-      if (dead.length > 0) {
-        await cleanupDeadWorkers(runtime, dead);
-        const recovered = await applyDeadWorkerRecovery(runtime, dead);
-        if (recovered > 0) {
-          const fresh = await runtime.loadQueue();
-          finalMessage =
-            `Recovered ${recovered} task(s) from dead workers.\n\n${getQueueSummary(fresh)}`;
+  // Internal retry loop: restart the watch on timeout without
+  // returning to the model.
+  while (!signal?.aborted) {
+    const outcome = await watchQueueUntil(
+      runtime.queuePath,
+      async (queue) => {
+        // First: reap workers whose tmux windows have vanished. Detection
+        // and git cleanup happen unlocked so other agents can still
+        // mutate the queue; only the final recoverTask mutation takes
+        // the lock. Heartbeat gives us a wake even without a queue write.
+        const dead = await detectDeadWorkers(runtime, queue);
+        if (dead.length > 0) {
+          await cleanupDeadWorkers(runtime, dead);
+          const recovered = await applyDeadWorkerRecovery(runtime, dead);
+          if (recovered > 0) {
+            const fresh = await runtime.loadQueue();
+            finalMessage =
+              `Recovered ${recovered} task(s) from dead workers.\n\n${getQueueSummary(fresh)}`;
+            return "done";
+          }
+        }
+
+        // Next: diff task identities + statuses. A (complete, dispatch)
+        // pair that keeps counts stable still registers as a change.
+        const signature = signQueue(queue);
+        if (signature !== lastSignature) {
+          finalMessage = getQueueSummary(queue);
           return "done";
         }
-      }
+        lastSignature = signature;
+        return "continue";
+      },
+      { signal, timeoutMs: MONITOR_CYCLE_MS, heartbeatMs: MONITOR_HEARTBEAT_MS },
+    );
 
-      // Next: diff task identities + statuses. A (complete, dispatch)
-      // pair that keeps counts stable still registers as a change.
-      const signature = signQueue(queue);
-      if (signature !== lastSignature) {
-        finalMessage = getQueueSummary(queue);
-        return "done";
-      }
-      lastSignature = signature;
-      return "continue";
-    },
-    { signal, timeoutMs, heartbeatMs: MONITOR_HEARTBEAT_MS },
-  );
-
-  if (outcome === "aborted") {
-    return {
-      content: [{ type: "text" as const, text: "Monitor aborted." }],
-      details: {},
-    };
+    if (outcome === "done" && finalMessage !== null) {
+      return { content: [{ type: "text" as const, text: finalMessage }], details: {} };
+    }
+    if (outcome === "aborted") {
+      return {
+        content: [{ type: "text" as const, text: "Monitor aborted." }],
+        details: {},
+      };
+    }
+    // outcome === "timeout" → loop silently
   }
 
-  if (outcome === "done" && finalMessage !== null) {
-    return { content: [{ type: "text" as const, text: finalMessage }], details: {} };
-  }
-
-  // Timeout: read the latest state non-throwingly so the LLM can decide.
-  const final = await readQueue(runtime.queuePath);
-  const summary = final.ok ? getQueueSummary(final.value) : "(queue read failed)";
   return {
-    content: [{
-      type: "text" as const,
-      text: `Monitor timed out after ${Math.round(timeoutMs / 1000)}s with no changes. Call monitor_tasks again to keep watching \u2014 new work can arrive at any time. Current state:\n${summary}`,
-    }],
+    content: [{ type: "text" as const, text: "Monitor aborted." }],
     details: {},
   };
 }

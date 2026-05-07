@@ -32,8 +32,8 @@ import {
 import type { TeamAgentRuntime } from "../runtime.js";
 import { watchQueueUntil } from "../watch.js";
 
-/** Default timeout (seconds) for wait_for_merges. */
-const WAIT_MERGES_DEFAULT_TIMEOUT_SEC = 300;
+/** Per-cycle timeout for the internal watch loop (ms). */
+const WAIT_MERGES_CYCLE_MS = 30 * 60 * 1000;
 
 /** Heartbeat safety net for wait_for_merges (ms). */
 const WAIT_MERGES_HEARTBEAT_MS = 30_000;
@@ -149,43 +149,36 @@ export function registerQueueTools(pi: ExtensionAPI, runtime: TeamAgentRuntime):
     name: "wait_for_merges",
     label: "Wait for Merges",
     description:
-      "Block until the evaluator closes at least one more task (i.e., new work has landed on the target branch). Useful for reviewer agents that inspect the emerging codebase after each merge. Times out after timeoutSeconds (default 300); call again to keep waiting.",
-    parameters: Type.Object({
-      timeoutSeconds: Type.Optional(
-        Type.Number({ description: "Max seconds to wait. Default 300." }),
-      ),
-    }),
-    async execute(_id, params, signal) {
-      const timeoutMs = (params.timeoutSeconds ?? WAIT_MERGES_DEFAULT_TIMEOUT_SEC) * 1000;
-
+      "Block until the evaluator closes at least one more task (i.e., new work has landed on the target branch). Retries internally on timeout — only returns when there is actual work or the session ends.",
+    parameters: Type.Object({}),
+    async execute(_id, _params, signal) {
       // Baseline the closed count so only merges that land DURING the
       // wait count — not the ones that were already there.
       const initial = await runtime.loadQueue();
       const baselineClosed = initial.closed.length;
 
-      const outcome = await watchQueueUntil(
-        runtime.queuePath,
-        async (queue) => (queue.closed.length > baselineClosed ? "done" : "continue"),
-        { signal, timeoutMs, heartbeatMs: WAIT_MERGES_HEARTBEAT_MS },
-      );
+      // Internal retry loop: restart the watch on timeout without
+      // returning to the model.
+      while (!signal?.aborted) {
+        const outcome = await watchQueueUntil(
+          runtime.queuePath,
+          async (queue) => (queue.closed.length > baselineClosed ? "done" : "continue"),
+          { signal, timeoutMs: WAIT_MERGES_CYCLE_MS, heartbeatMs: WAIT_MERGES_HEARTBEAT_MS },
+        );
 
-      if (outcome === "aborted") {
+        if (outcome === "done") break;
+        if (outcome === "aborted") {
+          return { content: [{ type: "text", text: "Wait aborted." }], details: {} };
+        }
+        // outcome === "timeout" → loop silently
+      }
+
+      if (signal?.aborted) {
         return { content: [{ type: "text", text: "Wait aborted." }], details: {} };
       }
 
       const current = await runtime.loadQueue();
       const delta = current.closed.length - baselineClosed;
-
-      if (delta === 0) {
-        return {
-          content: [{
-            type: "text",
-            text: `No merges yet (timed out after ${Math.round(timeoutMs / 1000)}s). New tasks can be added at any time \u2014 call wait_for_merges again to keep watching.\n\n${getQueueSummary(current)}`,
-          }],
-          details: {},
-        };
-      }
-
       const newlyClosed = current.closed.slice(-delta);
       const lines = [`${delta} new merge(s) since wait started:`];
       for (const t of newlyClosed) {

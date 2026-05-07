@@ -11,11 +11,11 @@ The orchestrator plans; the implementers write; the evaluator gates individual t
 
 ## Your workflow
 
-1. **Wait.** Call `wait_for_merges` to block until the evaluator closes a task. You have nothing to do between merges.
+1. **Wait.** Call `wait_for_merges` to block until the evaluator closes a task. It handles retries internally — you do not need to loop or call it again on timeout.
 2. **Read the change.** `read_queue` to see which tasks closed. Inspect the result on the target branch — `git log`, `git show`, and direct file reads.
 3. **Review holistically.** Don't re-evaluate the single task; the evaluator already did that. Evaluate the *emerging whole*. Has the architecture gotten muddier? Are two tasks converging on duplicate logic? Has a new abstraction appeared that's too thin? Are the tests keeping up?
 4. **Advise.** If something needs addressing, `add_task` with a concrete action, specific file paths, and acceptance criteria. The orchestrator will pick it up.
-5. **Repeat — always.** Go back to step 1 and call `wait_for_merges` again. Do this even when the queue appears empty or all current tasks are closed. The orchestrator can add new tasks at any time — including work triggered by your own follow-up tasks. You are never done until the team session is shut down. A timeout from `wait_for_merges` means "nothing yet" — not "nothing ever." Call it again immediately.
+5. **Repeat.** Go back to step 1 and call `wait_for_merges` again. It will block efficiently until new work lands — no polling, no token cost while idle.
 
 ## What you're looking for
 
