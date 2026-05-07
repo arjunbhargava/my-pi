@@ -17,10 +17,8 @@ import {
 import { diffNameStatus } from "../../../../lib/git.js";
 import {
   closeTask,
-  getQueueSummary,
   getTaskById,
   getTasksByStatus,
-  readQueue,
   rejectTask,
 } from "../../../../lib/task-queue.js";
 import type { Task } from "../../../../lib/types.js";
@@ -28,8 +26,13 @@ import { destroyWorkspace, squashMergeWorkspace } from "../../../../lib/workspac
 import type { TeamAgentRuntime } from "../runtime.js";
 import { watchQueueUntil } from "../watch.js";
 
-/** Default timeout (seconds) for wait_for_reviews. */
-const WAIT_DEFAULT_TIMEOUT_SEC = 120;
+/**
+ * Per-cycle timeout for the internal watch loop (ms). Each cycle is
+ * one call to watchQueueUntil; on timeout, the loop restarts silently
+ * without returning to the model. 30 minutes is generous — fs.watch
+ * provides the real wake-up; this is a safety net.
+ */
+const WAIT_CYCLE_MS = 30 * 60 * 1000;
 
 /**
  * Heartbeat for wait_for_reviews. fs.watch catches every queue write,
@@ -50,15 +53,10 @@ export function registerReviewTools(pi: ExtensionAPI, runtime: TeamAgentRuntime)
     name: "wait_for_reviews",
     label: "Wait for Reviews",
     description:
-      "Wait until at least one task is in 'review' status. Times out after timeoutSeconds (default 120) and returns current state. Call again to keep waiting.",
-    parameters: Type.Object({
-      timeoutSeconds: Type.Optional(
-        Type.Number({ description: "Max seconds to wait. Default 120." }),
-      ),
-    }),
-    async execute(_id, params, signal) {
-      const timeoutMs = (params.timeoutSeconds ?? WAIT_DEFAULT_TIMEOUT_SEC) * 1000;
-      return await handleWait(runtime, timeoutMs, signal);
+      "Block until at least one task is in 'review' status. Retries internally on timeout — only returns when there is actual work or the session ends.",
+    parameters: Type.Object({}),
+    async execute(_id, _params, signal) {
+      return await handleWait(runtime, signal);
     },
   });
 
@@ -98,39 +96,40 @@ export function registerReviewTools(pi: ExtensionAPI, runtime: TeamAgentRuntime)
 
 async function handleWait(
   runtime: TeamAgentRuntime,
-  timeoutMs: number,
   signal: AbortSignal | undefined,
 ) {
   let readyTasks: ReturnType<typeof getTasksByStatus> = [];
 
-  const outcome = await watchQueueUntil(
-    runtime.queuePath,
-    async (queue) => {
-      const tasks = getTasksByStatus(queue, "review");
-      if (tasks.length > 0) {
-        readyTasks = tasks;
-        return "done";
-      }
-      return "continue";
-    },
-    { signal, timeoutMs, heartbeatMs: WAIT_HEARTBEAT_MS },
-  );
+  // Internal retry loop: restart the watch on timeout without
+  // returning to the model. Only surfaces when there's real work
+  // or the session is torn down via abort signal.
+  while (!signal?.aborted) {
+    const outcome = await watchQueueUntil(
+      runtime.queuePath,
+      async (queue) => {
+        const tasks = getTasksByStatus(queue, "review");
+        if (tasks.length > 0) {
+          readyTasks = tasks;
+          return "done";
+        }
+        return "continue";
+      },
+      { signal, timeoutMs: WAIT_CYCLE_MS, heartbeatMs: WAIT_HEARTBEAT_MS },
+    );
 
-  if (outcome === "aborted") {
-    return {
-      content: [{ type: "text" as const, text: "Wait aborted." }],
-      details: {},
-    };
+    if (outcome === "done") break;
+    if (outcome === "aborted") {
+      return {
+        content: [{ type: "text" as const, text: "Wait aborted." }],
+        details: {},
+      };
+    }
+    // outcome === "timeout" → loop silently, no model round-trip
   }
 
-  if (outcome === "timeout") {
-    const final = await readQueue(runtime.queuePath);
-    const summary = final.ok ? getQueueSummary(final.value) : "(queue unavailable)";
+  if (signal?.aborted) {
     return {
-      content: [{
-        type: "text" as const,
-        text: `No tasks in review yet (timed out). New tasks can arrive at any time — call wait_for_reviews again to keep watching. Current state:\n${summary}`,
-      }],
+      content: [{ type: "text" as const, text: "Wait aborted." }],
       details: {},
     };
   }

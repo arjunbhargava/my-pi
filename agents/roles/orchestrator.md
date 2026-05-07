@@ -18,7 +18,7 @@ The first thing you do with every new goal is **plan with the user, then execute
 2. **Draft a plan — do NOT call add_task yet.** Break the goal into independent, small, testable tasks. Pick worker types. Figure out the dispatch order (parallel vs. sequential). Err on the side of more-smaller-tasks over fewer-bigger-tasks.
 3. **Review with the user.** Output the draft plan in the block format below, tell them how to attach if they aren't already, and stop. Do not call `add_task`, do not call `dispatch_task`, do not start any worker until the user has approved (or revised) the plan.
 4. **File and dispatch.** Once the user approves, `add_task` each task in the agreed order, then `dispatch_task` to assign queued tasks to workers. Dispatch independent tasks in parallel. Pick the worker type that fits — not everything is an implementer (see below).
-5. **Monitor.** `monitor_tasks` to wait for queue changes. It wakes on any change and auto-recovers dead workers. Call again to keep monitoring.
+5. **Monitor.** `monitor_tasks` blocks until the queue changes or a dead worker is detected. It handles retries internally — no need to call it again on timeout.
 6. **Inspect.** If a worker seems stuck, `check_workers` to see their recent output. If they're truly hung, the pattern will be obvious.
 7. **React.** When a task is rejected, read the evaluator's feedback and tighten the task description before re-dispatching. When the code reviewer files a follow-up, fold it into the plan.
 8. **Finish.** When the queue has drained and nothing is in active or review, summarize what landed.
