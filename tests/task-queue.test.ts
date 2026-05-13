@@ -24,6 +24,7 @@ import {
   readQueue,
   recoverTask,
   rejectTask,
+  reviseTask,
   writeQueue,
 } from "../src/lib/task-queue.js";
 
@@ -263,6 +264,99 @@ test("log is capped at limit", async () => {
   }
   // Log should be capped (50 entries max + initial entry)
   assert.ok(q.log.length <= 51, `log length ${q.log.length} exceeds cap`);
+});
+
+// ---------------------------------------------------------------------------
+// reviseTask tests
+// ---------------------------------------------------------------------------
+
+test("reviseTask transitions review → active with feedback, preserving worker", async () => {
+  const q = createQueue("t", "g", "main", "pi-team-test");
+  const task = addTask(q, "Implement auth", "desc", "orch");
+  dispatchTask(q, task.id, "worker-1", "orch", {
+    worktreePath: "/tmp/wt",
+    branchName: "team/t/worker-1",
+  });
+  completeTask(q, task.id, "Done", "worker-1");
+
+  const result = reviseTask(q, task.id, "Add a test for empty input", "evaluator");
+  assert.ok(result.ok);
+  if (!result.ok) return;
+
+  assert.equal(result.value.status, "active");
+  assert.equal(result.value.feedback, "Add a test for empty input");
+  // Worker identity and worktree are preserved
+  assert.equal(result.value.assignedTo, "worker-1");
+  assert.equal(result.value.worktreePath, "/tmp/wt");
+  assert.equal(result.value.branchName, "team/t/worker-1");
+});
+
+test("reviseTask rejects non-review task", async () => {
+  const q = createQueue("t", "g", "main", "pi-team-test");
+  const task = addTask(q, "Task", "desc", "orch");
+  dispatchTask(q, task.id, "worker-1", "orch");
+
+  // Task is active, not in review
+  const result = reviseTask(q, task.id, "feedback", "evaluator");
+  assert.ok(!result.ok);
+});
+
+test("reviseTask does not increment attempts", async () => {
+  const q = createQueue("t", "g", "main", "pi-team-test");
+  const task = addTask(q, "Task", "desc", "orch");
+  dispatchTask(q, task.id, "worker-1", "orch");
+  completeTask(q, task.id, "Result", "worker-1");
+
+  assert.equal(task.attempts, 1);
+  reviseTask(q, task.id, "fix typo", "evaluator");
+  assert.equal(task.attempts, 1, "attempts should not increment on revision");
+});
+
+// ---------------------------------------------------------------------------
+// dependsOn tests
+// ---------------------------------------------------------------------------
+
+test("addTask with dependsOn stores dependencies", async () => {
+  const q = createQueue("t", "g", "main", "pi-team-test");
+  const taskA = addTask(q, "A", "desc", "orch");
+  const taskB = addTask(q, "B", "depends on A", "orch", { dependsOn: [taskA.id] });
+
+  assert.deepEqual(taskB.dependsOn, [taskA.id]);
+});
+
+test("dispatchTask refuses when dependencies are unmet", async () => {
+  const q = createQueue("t", "g", "main", "pi-team-test");
+  const taskA = addTask(q, "A", "desc", "orch");
+  const taskB = addTask(q, "B", "depends on A", "orch", { dependsOn: [taskA.id] });
+
+  // A is still queued (not closed) — dispatching B should fail
+  const result = dispatchTask(q, taskB.id, "worker-1", "orch");
+  assert.ok(!result.ok);
+  if (result.ok) return;
+  assert.ok(result.error.includes("unmet dependencies"));
+});
+
+test("dispatchTask succeeds when all dependencies are closed", async () => {
+  const q = createQueue("t", "g", "main", "pi-team-test");
+  const taskA = addTask(q, "A", "desc", "orch");
+  const taskB = addTask(q, "B", "depends on A", "orch", { dependsOn: [taskA.id] });
+
+  // Close task A through the full lifecycle
+  dispatchTask(q, taskA.id, "worker-1", "orch");
+  completeTask(q, taskA.id, "Done", "worker-1");
+  closeTask(q, taskA.id, "evaluator");
+
+  // Now B should be dispatchable
+  const result = dispatchTask(q, taskB.id, "worker-2", "orch");
+  assert.ok(result.ok);
+});
+
+test("dispatchTask with no dependsOn always succeeds", async () => {
+  const q = createQueue("t", "g", "main", "pi-team-test");
+  const task = addTask(q, "Independent", "desc", "orch");
+
+  const result = dispatchTask(q, task.id, "worker-1", "orch");
+  assert.ok(result.ok);
 });
 
 // ---------------------------------------------------------------------------

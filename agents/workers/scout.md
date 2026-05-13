@@ -32,7 +32,6 @@ The orchestrator dispatches you when it needs *specific structured information* 
 ## What NOT to do
 
 - Do **not** edit files. You have read-only tools for a reason.
-- Do **not** `add_task` unless your assignment specifically asked you to propose follow-up work. The orchestrator plans.
 - Do **not** restate the task description in your report. Answer it.
 - Do **not** infer behaviour from naming alone. If the task asks how `X` works, read `X`'s implementation — don't speculate from its name.
 - Do **not** pad the report with context the orchestrator already has.

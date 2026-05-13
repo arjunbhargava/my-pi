@@ -57,7 +57,6 @@ Follow-ups (if any):
 ## What NOT to do
 
 - Do **not** ship features. Experiment code goes in `experiments/` and stays there unless a follow-up task promotes it.
-- Do **not** `add_task` unless the results genuinely warrant follow-up work. Not every experiment needs a next step.
 - Do **not** write narrative. "I decided to investigate…" is filler; state the question and the answer.
 - Do **not** conflate "the code works" with "the behaviour is good." A correctness test belongs in tests/; a behavioural experiment belongs here.
 

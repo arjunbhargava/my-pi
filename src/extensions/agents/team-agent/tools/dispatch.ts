@@ -7,6 +7,7 @@
  */
 
 import * as path from "node:path";
+import { readFileSync, statSync } from "node:fs";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 
@@ -23,6 +24,7 @@ import { discoverAgentsFromDirs } from "../../agent-config.js";
 import { spawnAgentWindow } from "../../launcher.js";
 import type { TeamAgentConfig } from "../../types.js";
 import type { TeamAgentRuntime } from "../runtime.js";
+import { PROGRESS_FILENAME } from "../session.js";
 import { watchQueueUntil } from "../watch.js";
 
 /** Default worker agent type when dispatch_task is called without one. */
@@ -35,9 +37,16 @@ const MONITOR_CYCLE_MS = 30 * 60 * 1000;
  * How often monitor_tasks re-runs dead-worker detection even without a
  * queue write. Worker death doesn't produce a filesystem event by itself
  * (tmux doesn't touch the queue), so we periodically poll tmux as a
- * safety net. Cheap: one `tmux list-windows` call.
+ * safety net. Cheap: one `tmux list-windows` call + stat() per worker.
  */
 const MONITOR_HEARTBEAT_MS = 10_000;
+
+/**
+ * How long a worker can go without a tool call before being considered
+ * stalled. 5 minutes is generous — a worker making progress will
+ * typically call a tool every few seconds.
+ */
+const STALL_THRESHOLD_MS = 5 * 60 * 1000;
 
 /** Width of captured-output lines shown in check_workers. */
 const WORKER_OUTPUT_LINE_WIDTH = 120;
@@ -156,7 +165,9 @@ async function handleDispatch(
 
   const taskPrompt = [
     `You are ${workerName}. Your assigned task ID is: ${taskId}.`,
-    "Use read_queue to get your task details, then do the work, then use complete_task when done.",
+    "Use read_queue to get your task details, do the work, then complete_task when done.",
+    "After completing, call wait_for_verdict to block until the evaluator reviews your work.",
+    "If revised, fix the feedback and complete_task again. If closed, exit.",
   ].join(" ");
 
   const spawnResult = await spawnAgentWindow(runtime.tmuxExec(), {
@@ -309,24 +320,47 @@ async function handleCheckWorkers(runtime: TeamAgentRuntime) {
           assignedTo: task.assignedTo,
           worktreePath: task.worktreePath,
           branchName: task.branchName,
+          reason: "dead",
         });
         lines.push(`    → Recovered, worktree cleaned up, and requeued`);
       }
     } else {
-      lines.push(`  ✓ ${workerName} — ALIVE`);
-      lines.push(`    Task: ${task.title} (${task.id})`);
+      // Check progress heartbeat for stalls.
+      let stallStatus: "stalled" | "looping" | null = null;
+      if (task.worktreePath) {
+        const progressPath = path.join(task.worktreePath, PROGRESS_FILENAME);
+        stallStatus = checkProgressFile(progressPath);
+      }
 
-      const paneResult = await capturePane(tmuxExec, runtime.config.tmuxSession, task.assignedTo!);
-      if (paneResult.ok) {
-        const tail = paneResult.value
-          .split("\n")
-          .filter((l) => l.trim())
-          .slice(-WORKER_OUTPUT_TAIL_LINES);
-        if (tail.length > 0) {
-          lines.push(`    Recent output:`);
-          for (const line of tail) lines.push(`      ${line.slice(0, WORKER_OUTPUT_LINE_WIDTH)}`);
-        } else {
-          lines.push(`    (no recent output)`);
+      if (stallStatus) {
+        lines.push(`  ⚠ ${workerName} — ${stallStatus.toUpperCase()}`);
+        lines.push(`    Task: ${task.title} (${task.id})`);
+        if (task.assignedTo) {
+          dead.push({
+            taskId: task.id,
+            assignedTo: task.assignedTo,
+            worktreePath: task.worktreePath,
+            branchName: task.branchName,
+            reason: stallStatus,
+          });
+          lines.push(`    → Recovered and requeued`);
+        }
+      } else {
+        lines.push(`  ✓ ${workerName} — ALIVE`);
+        lines.push(`    Task: ${task.title} (${task.id})`);
+
+        const paneResult = await capturePane(tmuxExec, runtime.config.tmuxSession, task.assignedTo!);
+        if (paneResult.ok) {
+          const tail = paneResult.value
+            .split("\n")
+            .filter((l) => l.trim())
+            .slice(-WORKER_OUTPUT_TAIL_LINES);
+          if (tail.length > 0) {
+            lines.push(`    Recent output:`);
+            for (const line of tail) lines.push(`      ${line.slice(0, WORKER_OUTPUT_LINE_WIDTH)}`);
+          } else {
+            lines.push(`    (no recent output)`);
+          }
         }
       }
     }
@@ -346,17 +380,25 @@ async function handleCheckWorkers(runtime: TeamAgentRuntime) {
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-/** Identifier + worktree pointers for a worker whose tmux window has died. */
+/** Identifier + worktree pointers for a worker that needs recovery. */
 interface DeadWorker {
   taskId: string;
   assignedTo: string;
   worktreePath?: string;
   branchName?: string;
+  reason: "dead" | "stalled" | "looping";
 }
 
 /**
- * Scan active tasks for dead workers. Pure detection — no mutation,
- * no cleanup. Safe to call from an unlocked snapshot of the queue.
+ * Scan active tasks for dead, stalled, or looping workers.
+ *
+ * Detection criteria:
+ *   dead    — tmux window no longer exists
+ *   stalled — .progress file mtime older than STALL_THRESHOLD_MS
+ *   looping — .progress file shows same tool repeated N+ times
+ *
+ * Pure detection — no mutation, no cleanup. Safe to call from an
+ * unlocked snapshot of the queue.
  */
 async function detectDeadWorkers(
   runtime: TeamAgentRuntime,
@@ -366,25 +408,75 @@ async function detectDeadWorkers(
   const dead: DeadWorker[] = [];
   for (const task of activeTasks) {
     if (!task.assignedTo) continue;
+
     const alive = await runtime.isWorkerAlive(task.assignedTo);
-    if (alive) continue;
-    dead.push({
-      taskId: task.id,
-      assignedTo: task.assignedTo,
-      worktreePath: task.worktreePath,
-      branchName: task.branchName,
-    });
+    if (!alive) {
+      dead.push({
+        taskId: task.id,
+        assignedTo: task.assignedTo,
+        worktreePath: task.worktreePath,
+        branchName: task.branchName,
+        reason: "dead",
+      });
+      continue;
+    }
+
+    // Check progress heartbeat for stalls and loops.
+    if (!task.worktreePath) continue;
+    const progressPath = path.join(task.worktreePath, PROGRESS_FILENAME);
+    const stallResult = checkProgressFile(progressPath);
+    if (stallResult) {
+      dead.push({
+        taskId: task.id,
+        assignedTo: task.assignedTo,
+        worktreePath: task.worktreePath,
+        branchName: task.branchName,
+        reason: stallResult,
+      });
+    }
   }
   return dead;
 }
 
 /**
- * Clean up the git state (worktree + branch) of each dead worker.
- * Slow, so kept outside the queue lock. Called by the monitor and
+ * Check a worker's .progress file for stall or loop conditions.
+ * Returns the failure reason, or null if the worker appears healthy.
+ */
+function checkProgressFile(progressPath: string): "stalled" | "looping" | null {
+  try {
+    const stat = statSync(progressPath);
+    const age = Date.now() - stat.mtimeMs;
+    if (age > STALL_THRESHOLD_MS) return "stalled";
+
+    // Check for looping by reading the file content.
+    const content = readFileSync(progressPath, "utf-8").trim();
+    const parsed = JSON.parse(content) as { timestamp: number; tool: string };
+    // The progress file only holds the LAST tool call. To detect loops
+    // reliably we'd need a ring buffer, but a simple heuristic: if the
+    // file has been rewritten with the same tool name and the mtime is
+    // very recent (< heartbeat interval), the worker is likely looping.
+    // For now, we rely on stall detection as the primary safety net.
+    // Loop detection will use a counter file in a follow-up.
+    void parsed;
+    return null;
+  } catch {
+    // File doesn't exist yet (worker just started) or unreadable — healthy.
+    return null;
+  }
+}
+
+/**
+ * Clean up the git state (worktree + branch) of each dead/stalled worker.
+ * For stalled workers, also kills the tmux window first since it's still
+ * alive. Slow, so kept outside the queue lock. Called by the monitor and
  * check_workers paths before applying recovery to the queue.
  */
 async function cleanupDeadWorkers(runtime: TeamAgentRuntime, dead: DeadWorker[]): Promise<void> {
   for (const w of dead) {
+    // Stalled/looping workers have a live window — kill it first.
+    if (w.reason !== "dead") {
+      await runtime.killWorkerWindow(w.assignedTo);
+    }
     if (w.worktreePath && w.branchName) {
       await runtime.cleanupWorkerGit(w.worktreePath, w.branchName);
     }
@@ -406,15 +498,27 @@ async function applyDeadWorkerRecovery(
   return await runtime.withQueueLock((queue) => {
     let recovered = 0;
     for (const w of dead) {
+      const reason = reasonMessage(w);
       const result = recoverTask(
         queue,
         w.taskId,
-        `Worker '${w.assignedTo}' exited without completing. Window no longer exists.`,
+        reason,
         runtime.agentName,
       );
       if (result.ok) recovered++;
     }
     return recovered;
   });
+}
+
+function reasonMessage(w: DeadWorker): string {
+  switch (w.reason) {
+    case "dead":
+      return `Worker '${w.assignedTo}' exited without completing. Window no longer exists.`;
+    case "stalled":
+      return `Worker '${w.assignedTo}' stalled — no tool activity for over 5 minutes.`;
+    case "looping":
+      return `Worker '${w.assignedTo}' detected looping — same tool called repeatedly without progress.`;
+  }
 }
 

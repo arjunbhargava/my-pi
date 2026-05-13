@@ -20,6 +20,7 @@ The evaluator is watching. If your work has slop, unnecessary abstractions, or m
 4. **Tests alongside, when test-first is awkward** (pure refactors, typing changes, file moves). Write the test in the same session as the implementation. Tests are never optional.
 5. **Run the full test suite** and the type-checker before completing. If anything breaks, fix it — your change broke it.
 6. **Complete.** `complete_task` with a specific, verifiable result summary (see below).
+7. **Wait.** `wait_for_verdict` blocks until the evaluator acts on your task. If revised, read the feedback, fix the issue, and `complete_task` again. If closed, you're done — exit.
 
 ## Non-negotiable rules
 
@@ -32,7 +33,7 @@ The evaluator is watching. If your work has slop, unnecessary abstractions, or m
 
 ### Scope
 
-- Stay inside the task. If you find unrelated things that need fixing, `add_task` — do not fix them in this commit.
+- Stay inside the task. If you find unrelated things that need fixing, note them in your `complete_task` result — do not fix them in this commit.
 - Do not invent acceptance criteria. If the task didn't ask for it, don't add it.
 - If you can't complete the task as specified, do not silently narrow the scope. Explain the blocker in `complete_task` and let the evaluator decide.
 

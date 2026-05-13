@@ -133,6 +133,7 @@ export function addTask(
   title: string,
   description: string,
   addedBy: string,
+  options?: { dependsOn?: string[] },
 ): Task {
   const now = Date.now();
   const task: Task = {
@@ -146,6 +147,10 @@ export function addTask(
     updatedAt: now,
   };
 
+  if (options?.dependsOn && options.dependsOn.length > 0) {
+    task.dependsOn = options.dependsOn;
+  }
+
   queue.tasks.push(task);
   appendLog(queue, addedBy, `Added task: ${title}`);
   return task;
@@ -154,6 +159,7 @@ export function addTask(
 /**
  * Dispatch a queued task to a worker.
  * Moves status from "queued" to "active" and increments attempts.
+ * Refuses to dispatch if any task in `dependsOn` has not been closed.
  */
 export function dispatchTask(
   queue: TaskQueue,
@@ -166,6 +172,18 @@ export function dispatchTask(
   if (!task) return { ok: false, error: `Task '${taskId}' not found` };
   if (task.status !== "queued") {
     return { ok: false, error: `Task '${taskId}' is '${task.status}', expected 'queued'` };
+  }
+
+  // Enforce dependency ordering: all dependsOn IDs must be in closed.
+  if (task.dependsOn && task.dependsOn.length > 0) {
+    const closedIds = new Set(queue.closed.map((c) => c.id));
+    const unmet = task.dependsOn.filter((dep) => !closedIds.has(dep));
+    if (unmet.length > 0) {
+      return {
+        ok: false,
+        error: `Task '${taskId}' has unmet dependencies: ${unmet.join(", ")}. They must be closed first.`,
+      };
+    }
   }
 
   task.status = "active";
@@ -238,8 +256,9 @@ export function closeTask(
 
 /**
  * Reject a task (evaluator sends back with feedback).
- * Reinserts the task at position 0 with status "queued" and feedback preserved.
- * The previous result is kept so the next worker can see what was tried.
+ * Kills the worker, destroys the worktree, and reinserts the task at
+ * position 0 with status "queued" and feedback preserved. The previous
+ * result is kept so the next worker can see what was tried.
  */
 export function rejectTask(
   queue: TaskQueue,
@@ -267,6 +286,34 @@ export function rejectTask(
   queue.tasks.splice(taskIndex, 1);
   queue.tasks.unshift(task);
   appendLog(queue, rejectedBy, `Rejected '${task.title}': ${feedback.slice(0, 80)}`);
+  return { ok: true, value: task };
+}
+
+/**
+ * Revise a task (evaluator sends minor feedback to the same worker).
+ * Moves the task from "review" back to "active" without destroying
+ * the worktree or killing the worker. The worker stays alive and
+ * re-reads the feedback via wait_for_verdict.
+ */
+export function reviseTask(
+  queue: TaskQueue,
+  taskId: string,
+  feedback: string,
+  revisedBy: string,
+): Result<Task> {
+  const taskIndex = queue.tasks.findIndex((t) => t.id === taskId);
+  if (taskIndex === -1) return { ok: false, error: `Task '${taskId}' not found` };
+
+  const task = queue.tasks[taskIndex];
+  if (task.status !== "review") {
+    return { ok: false, error: `Task '${taskId}' is '${task.status}', expected 'review'` };
+  }
+
+  task.status = "active";
+  task.feedback = feedback;
+  task.updatedAt = Date.now();
+  // assignedTo, worktreePath, branchName are preserved — worker stays alive
+  appendLog(queue, revisedBy, `Revision requested for '${task.title}': ${feedback.slice(0, 80)}`);
   return { ok: true, value: task };
 }
 

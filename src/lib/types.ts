@@ -117,8 +117,14 @@ export interface Task {
   branchName?: string;
   /** Worker output posted on completion (before review). */
   result?: string;
-  /** Evaluator feedback attached on rejection. */
+  /** Evaluator feedback attached on rejection or revision request. */
   feedback?: string;
+  /**
+   * Task IDs that must be closed before this task can be dispatched.
+   * Enforced by dispatchTask — refuses to dispatch if any dependency
+   * is still in the active task list (not yet in `closed`).
+   */
+  dependsOn?: string[];
   /** Number of times this task has been attempted. Incremented on each dispatch. */
   attempts: number;
   /** Unix timestamp (ms) when the task was created. */

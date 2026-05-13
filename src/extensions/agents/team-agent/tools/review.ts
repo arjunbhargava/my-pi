@@ -3,7 +3,8 @@
  *
  *   wait_for_reviews  — block until at least one task is in review
  *   close_task        — approve; squash-merge the worker's branch
- *   reject_task       — requeue the task with feedback
+ *   revise_task       — send minor feedback back to the live worker
+ *   reject_task       — kill worker, destroy worktree, requeue task
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
@@ -20,6 +21,7 @@ import {
   getTaskById,
   getTasksByStatus,
   rejectTask,
+  reviseTask,
 } from "../../../../lib/task-queue.js";
 import type { Task } from "../../../../lib/types.js";
 import { destroyWorkspace, squashMergeWorkspace } from "../../../../lib/workspace.js";
@@ -74,10 +76,26 @@ export function registerReviewTools(pi: ExtensionAPI, runtime: TeamAgentRuntime)
   });
 
   pi.registerTool({
+    name: "revise_task",
+    label: "Revise Task",
+    description:
+      "Send minor feedback to a worker whose task is in review. The worker stays alive with its worktree intact and receives the feedback via wait_for_verdict. Use this for small fixes (add a test case, rename a variable, fix a typo). Use reject_task for fundamental problems that need a fresh start.",
+    parameters: Type.Object({
+      taskId: Type.String({ description: "ID of the reviewed task to revise" }),
+      feedback: Type.String({
+        description: "Specific, actionable feedback for the worker to address",
+      }),
+    }),
+    async execute(_id, params) {
+      return await handleRevise(runtime, params.taskId, params.feedback);
+    },
+  });
+
+  pi.registerTool({
     name: "reject_task",
     label: "Reject Task",
     description:
-      "Reject a reviewed task with feedback. Kills the worker's tmux window and requeues the task for another attempt.",
+      "Reject a reviewed task with feedback. Kills the worker's tmux window, destroys the worktree, and requeues the task for a fresh attempt. Use for fundamental failures where the approach is wrong.",
     parameters: Type.Object({
       taskId: Type.String({ description: "ID of the reviewed task to reject" }),
       feedback: Type.String({
@@ -242,6 +260,29 @@ async function buildCloseCommitMessage(
   sections.push({ heading: "Changes", items: fileItems });
 
   return composeCommitMessage(subject, sections);
+}
+
+// ---------------------------------------------------------------------------
+// revise_task
+// ---------------------------------------------------------------------------
+
+async function handleRevise(runtime: TeamAgentRuntime, taskId: string, feedback: string) {
+  // No worker kill, no worktree destruction. Just move the task back
+  // to active with feedback attached. The worker picks it up via
+  // wait_for_verdict.
+  const revised = await runtime.withQueueLock((queue) => {
+    const result = reviseTask(queue, taskId, feedback, runtime.agentName);
+    if (!result.ok) throw new Error(result.error);
+    return result.value;
+  });
+
+  return {
+    content: [{
+      type: "text" as const,
+      text: `Revision requested for '${revised.title}'. Worker notified with feedback. (attempt ${revised.attempts})`,
+    }],
+    details: {},
+  };
 }
 
 // ---------------------------------------------------------------------------
