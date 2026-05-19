@@ -172,8 +172,8 @@ export class JsonRpcTransport {
   }
 
   private dispatchMessage(message: Record<string, unknown>): void {
-    if ("id" in message) {
-      // Response to a prior request.
+    if ("id" in message && !("method" in message)) {
+      // Response to a prior client request.
       const id = message["id"] as number;
       const pending = this.pending.get(id);
       if (!pending) return;
@@ -189,6 +189,13 @@ export class JsonRpcTransport {
       } else {
         pending.resolve(message["result"]);
       }
+    } else if ("id" in message && "method" in message) {
+      // Server-initiated request — reply with an error so the server does not stall.
+      this.writeMessage({
+        jsonrpc: "2.0",
+        id: message["id"],
+        error: { code: -32601, message: "Method not supported" },
+      });
     } else if ("method" in message) {
       // Incoming notification.
       const method = message["method"] as string;
