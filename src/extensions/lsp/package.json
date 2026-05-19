@@ -1,5 +1,8 @@
 {
   "name": "@my-pi/lsp-extension",
   "private": true,
-  "type": "module"
+  "type": "module",
+  "pi": {
+    "extensions": ["./lsp.ts"]
+  }
 }
