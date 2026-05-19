@@ -1,0 +1,5 @@
+{
+  "name": "@my-pi/lsp-extension",
+  "private": true,
+  "type": "module"
+}

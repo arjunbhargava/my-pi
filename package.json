@@ -6,7 +6,8 @@
     "extensions": [
       "./src/extensions/worktree/worktree.ts",
       "./src/extensions/agents/agents.ts",
-      "./src/extensions/websearch/websearch.ts"
+      "./src/extensions/websearch/websearch.ts",
+      "./src/extensions/lsp/lsp.ts"
     ],
     "skills": [
       "./skills"
