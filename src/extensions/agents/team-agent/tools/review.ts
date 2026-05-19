@@ -1,10 +1,10 @@
 /**
  * Evaluator-only tools for reviewing, approving, and rejecting tasks.
  *
- *   wait_for_reviews  — block until at least one task is in review
- *   close_task        — approve; squash-merge the worker's branch
- *   revise_task       — send minor feedback back to the live worker
- *   reject_task       — kill worker, destroy worktree, requeue task
+ *   wait_to_evaluate   — block until tasks are ready; auto-rebase before returning
+ *   close_task         — approve; squash-merge the worker's branch
+ *   revise_task        — send minor feedback back to the live worker
+ *   reject_task        — kill worker, destroy worktree, requeue task
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
@@ -24,7 +24,11 @@ import {
   reviseTask,
 } from "../../../../lib/task-queue.js";
 import type { Task } from "../../../../lib/types.js";
-import { destroyWorkspace, squashMergeWorkspace } from "../../../../lib/workspace.js";
+import {
+  destroyWorkspace,
+  rebaseWorkspace,
+  squashMergeWorkspace,
+} from "../../../../lib/workspace.js";
 import type { TeamAgentRuntime } from "../runtime.js";
 import { watchQueueUntil } from "../watch.js";
 
@@ -37,7 +41,7 @@ import { watchQueueUntil } from "../watch.js";
 const WAIT_CYCLE_MS = 30 * 60 * 1000;
 
 /**
- * Heartbeat for wait_for_reviews. fs.watch catches every queue write,
+ * Heartbeat for wait_to_evaluate. fs.watch catches every queue write,
  * so this is a conservative safety net against missed events on
  * network or virtualised filesystems — not the primary wake source.
  */
@@ -52,10 +56,10 @@ const RESULT_PREVIEW_CHARS = 200;
 
 export function registerReviewTools(pi: ExtensionAPI, runtime: TeamAgentRuntime): void {
   pi.registerTool({
-    name: "wait_for_reviews",
-    label: "Wait for Reviews",
+    name: "wait_to_evaluate",
+    label: "Wait to Evaluate",
     description:
-      "Block until at least one task is in 'review' status. Retries internally on timeout — only returns when there is actual work or the session ends.",
+      "Block until tasks are ready for evaluation. Automatically rebases each task's branch onto the current target branch before returning. Tasks with rebase conflicts are auto-rejected and requeued — you only see tasks that are ready to review in full context. Retries internally on timeout.",
     parameters: Type.Object({}),
     async execute(_id, _params, signal) {
       return await handleWait(runtime, signal);
@@ -66,7 +70,7 @@ export function registerReviewTools(pi: ExtensionAPI, runtime: TeamAgentRuntime)
     name: "close_task",
     label: "Close Task",
     description:
-      "Approve and close a reviewed task. Merges the worker's branch into the target branch. If the direct merge conflicts (due to other merges since the worker started), automatically tries to update the worker's branch first and retry. Only rejects on true unresolvable conflicts. Kills the worker's tmux window on success.",
+      "Approve and close a reviewed task. Squash-merges the worker's branch into the target branch. The branch has already been rebased so this is a clean delta application. Kills the worker's tmux window on success.",
     parameters: Type.Object({
       taskId: Type.String({ description: "ID of the reviewed task to close" }),
     }),
@@ -109,14 +113,14 @@ export function registerReviewTools(pi: ExtensionAPI, runtime: TeamAgentRuntime)
 }
 
 // ---------------------------------------------------------------------------
-// wait_for_reviews
+// wait_to_evaluate
 // ---------------------------------------------------------------------------
 
 async function handleWait(
   runtime: TeamAgentRuntime,
   signal: AbortSignal | undefined,
 ) {
-  let readyTasks: ReturnType<typeof getTasksByStatus> = [];
+  let readyTasks: Task[] = [];
 
   // Internal retry loop: restart the watch on timeout without
   // returning to the model. Only surfaces when there's real work
@@ -152,17 +156,81 @@ async function handleWait(
     };
   }
 
-  const lines = ["Tasks ready for review:\n"];
-  for (const t of readyTasks) {
-    lines.push(`${t.id} — ${t.title}`);
-    if (t.result) {
-      const preview = t.result.slice(0, RESULT_PREVIEW_CHARS);
-      const ellipsis = t.result.length > RESULT_PREVIEW_CHARS ? "..." : "";
-      lines.push(`  Result: ${preview}${ellipsis}`);
+  // Rebase each task's branch onto current targetBranch before
+  // presenting to the evaluator. Tasks that conflict are auto-rejected.
+  const snapshot = await runtime.loadQueue();
+  const rebased: Task[] = [];
+  const conflicted: string[] = [];
+
+  for (const task of readyTasks) {
+    if (!task.worktreePath || !task.branchName) {
+      // No worktree (e.g., code-reviewer report) — pass through as-is.
+      rebased.push(task);
+      continue;
+    }
+
+    const workspaceGit = runtime.worktreeGit(task.worktreePath);
+    const rebaseResult = await rebaseWorkspace(workspaceGit, snapshot.targetBranch);
+
+    if (rebaseResult.ok) {
+      rebased.push(task);
+    } else {
+      // Auto-reject: rebase conflict. Requeue with feedback.
+      const feedback = `Automatic rejection: ${rebaseResult.error}. Rework against the current target branch.`;
+      await autoRejectTask(runtime, task, feedback);
+      conflicted.push(`${task.id} (${task.title}): ${rebaseResult.error}`);
     }
   }
 
+  const lines: string[] = [];
+
+  if (conflicted.length > 0) {
+    lines.push(`Auto-rejected ${conflicted.length} task(s) due to rebase conflicts:`);
+    for (const c of conflicted) lines.push(`  ✗ ${c}`);
+    lines.push("");
+  }
+
+  if (rebased.length > 0) {
+    lines.push("Tasks ready for evaluation (rebased onto current target branch):\n");
+    for (const t of rebased) {
+      lines.push(`${t.id} — ${t.title}`);
+      if (t.result) {
+        const preview = t.result.slice(0, RESULT_PREVIEW_CHARS);
+        const ellipsis = t.result.length > RESULT_PREVIEW_CHARS ? "..." : "";
+        lines.push(`  Result: ${preview}${ellipsis}`);
+      }
+    }
+  } else if (conflicted.length > 0) {
+    lines.push("No tasks remain after rebase filtering. Waiting for requeued tasks to be re-dispatched.");
+    // Recurse: go back to waiting since all tasks were rejected.
+    return await handleWait(runtime, signal);
+  }
+
   return { content: [{ type: "text" as const, text: lines.join("\n") }], details: {} };
+}
+
+/**
+ * Auto-reject a task due to rebase conflict. Kills the worker,
+ * destroys the worktree, and requeues with conflict feedback.
+ */
+async function autoRejectTask(
+  runtime: TeamAgentRuntime,
+  task: Task,
+  feedback: string,
+): Promise<void> {
+  const workerName = task.assignedTo;
+  if (workerName) await runtime.killWorkerWindow(workerName);
+
+  if (task.worktreePath && task.branchName) {
+    await destroyWorkspace(runtime.repoGit(), {
+      worktreePath: task.worktreePath,
+      branchName: task.branchName,
+    });
+  }
+
+  await runtime.withQueueLock((queue) => {
+    rejectTask(queue, task.id, feedback, runtime.agentName);
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -170,9 +238,6 @@ async function handleWait(
 // ---------------------------------------------------------------------------
 
 async function handleClose(runtime: TeamAgentRuntime, taskId: string) {
-  // Snapshot read (unlocked) — we only need task info and targetBranch
-  // to drive the merge + cleanup. The queue mutation takes the lock
-  // below and re-validates the task's status there.
   const snapshot = await runtime.loadQueue();
   const task = getTaskById(snapshot, taskId);
   if (!task) throw new Error(`Task '${taskId}' not found`);
@@ -180,9 +245,6 @@ async function handleClose(runtime: TeamAgentRuntime, taskId: string) {
   const workerName = task.assignedTo;
 
   if (task.branchName && task.worktreePath) {
-    // Compose the squash commit message BEFORE merging: we need the
-    // diff between target and the worker branch, which only exists
-    // while the branch is still alive.
     const commitMessage = await buildCloseCommitMessage(runtime, snapshot.targetBranch, task);
 
     const mergeResult = await squashMergeWorkspace(
@@ -192,15 +254,11 @@ async function handleClose(runtime: TeamAgentRuntime, taskId: string) {
         branchName: task.branchName,
         baseBranch: snapshot.targetBranch,
       },
-      {
-        commitMessage,
-        retryAfterRebase: true,
-        workspaceGit: runtime.worktreeGit(task.worktreePath),
-      },
+      { commitMessage },
     );
     if (!mergeResult.ok) {
       throw new Error(
-        `${mergeResult.error} Use reject_task with feedback so a new worker can resolve the issue.`,
+        `${mergeResult.error} The branch should have been rebased before review. Use reject_task to requeue.`,
       );
     }
 
@@ -229,18 +287,6 @@ async function handleClose(runtime: TeamAgentRuntime, taskId: string) {
 
 /**
  * Build the squash-merge commit message for a closed task.
- *
- *     feat: <title> [(N attempts)]
- *
- *     Description:
- *     <task description>
- *
- *     Worker result:
- *     <task.result>
- *
- *     Changes:
- *     - add foo.ts
- *     - modify bar.ts
  */
 async function buildCloseCommitMessage(
   runtime: TeamAgentRuntime,
@@ -267,9 +313,6 @@ async function buildCloseCommitMessage(
 // ---------------------------------------------------------------------------
 
 async function handleRevise(runtime: TeamAgentRuntime, taskId: string, feedback: string) {
-  // No worker kill, no worktree destruction. Just move the task back
-  // to active with feedback attached. The worker picks it up via
-  // wait_for_verdict.
   const revised = await runtime.withQueueLock((queue) => {
     const result = reviseTask(queue, taskId, feedback, runtime.agentName);
     if (!result.ok) throw new Error(result.error);
@@ -290,15 +333,10 @@ async function handleRevise(runtime: TeamAgentRuntime, taskId: string, feedback:
 // ---------------------------------------------------------------------------
 
 async function handleReject(runtime: TeamAgentRuntime, taskId: string, feedback: string) {
-  // Snapshot read (unlocked) to figure out which worker to kill and
-  // which worktree to destroy. The queue mutation below takes the
-  // lock and re-validates that the task is still in review.
   const snapshot = await runtime.loadQueue();
   const task = getTaskById(snapshot, taskId);
   const workerName = task?.assignedTo;
 
-  // Kill the worker first so destroying its worktree doesn't yank the
-  // cwd out from under a still-running process.
   if (workerName) await runtime.killWorkerWindow(workerName);
 
   if (task?.worktreePath && task.branchName) {

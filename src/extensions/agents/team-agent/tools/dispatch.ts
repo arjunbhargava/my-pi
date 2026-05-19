@@ -17,6 +17,7 @@ import {
   getTasksByStatus,
   recoverTask,
 } from "../../../../lib/task-queue.js";
+import { getHeadSha } from "../../../../lib/git.js";
 import { capturePane } from "../../../../lib/tmux.js";
 import type { Task, TaskQueue, TaskStatus } from "../../../../lib/types.js";
 import { createWorkspace } from "../../../../lib/workspace.js";
@@ -132,12 +133,17 @@ async function handleDispatch(
     throw new Error(`Failed to create worker workspace: ${workspaceResult.error}`);
   }
 
+  // Record the commit SHA the workspace was branched from (audit trail).
+  const headResult = await getHeadSha(runtime.worktreeGit(workerWorktreePath));
+  const baseSha = headResult.ok ? headResult.value : undefined;
+
   let dispatched;
   try {
     dispatched = await runtime.withQueueLock((queue) => {
       const result = dispatchTask(queue, taskId, workerName, agentName, {
         worktreePath: workerWorktreePath,
         branchName: workerBranch,
+        baseSha,
       });
       if (!result.ok) throw new Error(result.error);
       return result.value;

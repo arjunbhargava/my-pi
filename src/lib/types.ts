@@ -125,6 +125,12 @@ export interface Task {
    * is still in the active task list (not yet in `closed`).
    */
   dependsOn?: string[];
+  /**
+   * Commit SHA of targetBranch at the time the workspace was created.
+   * Set by dispatch_task for audit — confirms the branch was forked
+   * from the expected state.
+   */
+  baseSha?: string;
   /** Number of times this task has been attempted. Incremented on each dispatch. */
   attempts: number;
   /** Unix timestamp (ms) when the task was created. */

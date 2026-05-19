@@ -4,14 +4,11 @@
  * A {@link Workspace} is a git branch + worktree pair derived from a
  * base branch. Both the single-task worktree extension and the
  * multi-agent team extension operate on workspaces; this module
- * centralises create / destroy / squash-merge so both callers stay
- * consistent.
+ * centralises create / destroy / rebase / squash-merge so both
+ * callers stay consistent.
  *
  * All functions take an explicit {@link GitContext} so the caller
- * controls which repository root the git commands run in. The
- * squash-merge path additionally distinguishes the *base* context
- * (where the merge commit lands) from an optional *workspace*
- * context (used when auto-rebase is requested).
+ * controls which repository root the git commands run in.
  */
 
 import {
@@ -100,24 +97,49 @@ export async function destroyWorkspace(
 }
 
 // ---------------------------------------------------------------------------
+// Rebase
+// ---------------------------------------------------------------------------
+
+/**
+ * Update a workspace branch to include the latest state of its base branch.
+ *
+ * Merges {@link baseBranch} into the workspace (a real merge commit, not
+ * a rebase — preserves worker history). If the merge conflicts, aborts
+ * cleanly and returns an error listing the conflicting files.
+ *
+ * After a successful rebase, the workspace branch is a descendant of
+ * {@link baseBranch}'s current HEAD, making the subsequent squash-merge
+ * trivial (no three-way surprises).
+ *
+ * @param workspaceGit - Git context rooted at the worker's worktree.
+ * @param baseBranch   - Branch to merge in (e.g., the team's target branch).
+ */
+export async function rebaseWorkspace(
+  workspaceGit: GitContext,
+  baseBranch: string,
+): Promise<Result<void>> {
+  const update = await mergeBranch(workspaceGit, baseBranch);
+  if (update.ok) {
+    return { ok: true, value: undefined };
+  }
+
+  // Merge failed — likely conflicts. Grab the file list before aborting.
+  const conflicts = await getMergeConflicts(workspaceGit);
+  await abortMerge(workspaceGit);
+  const files = conflicts.ok ? conflicts.value.join(", ") : "unknown files";
+  return {
+    ok: false,
+    error: `Rebase conflicts on: ${files}`,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Squash merge
 // ---------------------------------------------------------------------------
 
 export interface SquashMergeOptions {
   /** Commit message applied after the squash. */
   commitMessage: string;
-  /**
-   * If the initial squash fails (e.g. because other merges landed on
-   * the base branch since the workspace was created), merge the base
-   * into the workspace via {@link workspaceGit} and retry once.
-   * Requires {@link workspaceGit} to be set.
-   */
-  retryAfterRebase?: boolean;
-  /**
-   * Git context rooted at the workspace. Required when
-   * {@link retryAfterRebase} is true; ignored otherwise.
-   */
-  workspaceGit?: GitContext;
 }
 
 /** Outcome of a successful squash merge. */
@@ -129,15 +151,12 @@ export type SquashMergeValue =
 /**
  * Squash-merge a workspace branch into its base branch.
  *
- * Preconditions enforced:
+ * Preconditions:
+ *   - The workspace branch has already been rebased onto the base branch
+ *     via {@link rebaseWorkspace}. This makes the squash a trivial delta
+ *     application with no three-way merge surprises.
  *   - {@link baseGit}'s current branch equals {@link Workspace.baseBranch}.
  *   - The base working tree is clean.
- *
- * If the direct squash fails and {@link SquashMergeOptions.retryAfterRebase}
- * is true, the workspace branch is updated from its base and the squash
- * is retried once. Any failed merge attempt is rolled back via
- * {@link resetHard} (base) / {@link abortMerge} (workspace) before
- * returning.
  *
  * On success, returns {@link SquashMergeValue} carrying either the merge
  * commit SHA or `noop` when the workspace had no net changes.
@@ -150,39 +169,10 @@ export async function squashMergeWorkspace(
   const preconditionCheck = await ensureMergeReady(baseGit, ws.baseBranch);
   if (!preconditionCheck.ok) return preconditionCheck;
 
-  // Attempt 1: direct squash.
-  const direct = await mergeSquash(baseGit, ws.branchName);
-  if (direct.ok) {
-    return await finalizeSquash(baseGit, options.commitMessage);
-  }
-
-  // Any non-trivial mergeSquash failure can leave the index in a
-  // partial state; always reset before retrying or returning.
-  await resetHard(baseGit);
-
-  if (!options.retryAfterRebase || !options.workspaceGit) {
-    return { ok: false, error: direct.error };
-  }
-
-  // Attempt 2: pull base into workspace, then retry squash.
-  const update = await mergeBranch(options.workspaceGit, ws.baseBranch);
-  if (!update.ok) {
-    const conflicts = await getMergeConflicts(options.workspaceGit);
-    await abortMerge(options.workspaceGit);
-    const files = conflicts.ok ? conflicts.value.join(", ") : "unknown files";
-    return {
-      ok: false,
-      error: `Merge conflicts on: ${files}. Auto-rebase failed; a worker needs to resolve them.`,
-    };
-  }
-
-  const retry = await mergeSquash(baseGit, ws.branchName);
-  if (!retry.ok) {
+  const squash = await mergeSquash(baseGit, ws.branchName);
+  if (!squash.ok) {
     await resetHard(baseGit);
-    return {
-      ok: false,
-      error: `Could not merge workspace branch into '${ws.baseBranch}' even after rebasing.`,
-    };
+    return { ok: false, error: squash.error };
   }
 
   return await finalizeSquash(baseGit, options.commitMessage);

@@ -166,7 +166,7 @@ export function dispatchTask(
   taskId: string,
   assignedTo: string,
   dispatchedBy: string,
-  worktreeInfo?: { worktreePath: string; branchName: string },
+  worktreeInfo?: { worktreePath: string; branchName: string; baseSha?: string },
 ): Result<Task> {
   const task = queue.tasks.find((t) => t.id === taskId);
   if (!task) return { ok: false, error: `Task '${taskId}' not found` };
@@ -193,6 +193,7 @@ export function dispatchTask(
   if (worktreeInfo) {
     task.worktreePath = worktreeInfo.worktreePath;
     task.branchName = worktreeInfo.branchName;
+    if (worktreeInfo.baseSha) task.baseSha = worktreeInfo.baseSha;
   }
   appendLog(queue, dispatchedBy, `Dispatched '${task.title}' to ${assignedTo} (attempt ${task.attempts})`);
   return { ok: true, value: task };

@@ -59,7 +59,7 @@ test("orchestrator gets dispatch tools, add_task, read_queue — no complete, no
   assert.equal(manifest.review, false);
 });
 
-test("evaluator gets review tools and read_queue — no dispatch, no complete, no wait_for_closes", () => {
+test("evaluator gets review tools, add_task, and read_queue — no dispatch, no complete, no wait tools", () => {
   const manifest = getToolManifest(makeConfig({
     role: "permanent",
     agentName: "evaluator",
@@ -68,8 +68,8 @@ test("evaluator gets review tools and read_queue — no dispatch, no complete, n
 
   assert.equal(manifest.readQueue, true);
   assert.equal(manifest.review, true);
+  assert.equal(manifest.addTask, true);
   // Must NOT have these
-  assert.equal(manifest.addTask, false);
   assert.equal(manifest.completeTask, false);
   assert.equal(manifest.waitForVerdict, false);
   assert.equal(manifest.dispatch, false);

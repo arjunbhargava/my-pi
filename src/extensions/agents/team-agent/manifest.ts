@@ -10,7 +10,7 @@
  * could cause behavioral confusion.
  *
  *   Orchestrator: monitor_tasks (any queue state change)
- *   Evaluator:    wait_for_reviews (task enters review)
+ *   Evaluator:    wait_to_evaluate (task enters review, auto-rebased)
  *   Workers:      wait_for_verdict (task leaves review after complete)
  */
 
@@ -35,7 +35,7 @@ export interface ToolManifest {
   waitForVerdict: boolean;
   /** dispatch_task, monitor_tasks, check_workers — orchestrator controls */
   dispatch: boolean;
-  /** wait_for_reviews, close_task, revise_task, reject_task — evaluator controls */
+  /** wait_to_evaluate, close_task, revise_task, reject_task — evaluator controls */
   review: boolean;
 }
 
@@ -78,6 +78,7 @@ export function getToolManifest(config: TeamAgentConfig): ToolManifest {
     manifest.dispatch = true;
   } else if (config.capabilities.includes("close")) {
     // Evaluator
+    manifest.addTask = true;
     manifest.review = true;
   }
 
