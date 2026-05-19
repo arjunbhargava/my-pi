@@ -276,11 +276,23 @@ async function handleClose(runtime: TeamAgentRuntime, taskId: string) {
     return result.value;
   });
 
+  // Read updated queue to inform the evaluator about remaining work.
+  const updatedQueue = await runtime.loadQueue();
+  const remaining = getTasksByStatus(updatedQueue, "queued").length
+    + getTasksByStatus(updatedQueue, "active").length
+    + getTasksByStatus(updatedQueue, "review").length;
+
+  const lines = [
+    `Closed '${closed.title}' after ${closed.attempts} attempt(s). Changes merged into '${snapshot.targetBranch}'.`,
+  ];
+  if (remaining > 0) {
+    lines.push(`\n${remaining} task(s) still pending. Call wait_to_evaluate to continue.`);
+  } else {
+    lines.push("\nNo tasks remaining. Call wait_to_evaluate — the orchestrator may dispatch follow-ups or terminate you when the session is complete.");
+  }
+
   return {
-    content: [{
-      type: "text" as const,
-      text: `Closed '${closed.title}' after ${closed.attempts} attempt(s). Changes merged into '${snapshot.targetBranch}'.`,
-    }],
+    content: [{ type: "text" as const, text: lines.join("") }],
     details: {},
   };
 }

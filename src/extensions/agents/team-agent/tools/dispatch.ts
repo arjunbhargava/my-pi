@@ -7,7 +7,7 @@
  */
 
 import * as path from "node:path";
-import { readFileSync, statSync } from "node:fs";
+import { readFileSync, statSync, writeFileSync } from "node:fs";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 
@@ -132,6 +132,15 @@ async function handleDispatch(
   if (!workspaceResult.ok) {
     throw new Error(`Failed to create worker workspace: ${workspaceResult.error}`);
   }
+
+  // Exclude the progress heartbeat file from git so it doesn't dirty
+  // the worktree after complete_task commits. The evaluator's rebase
+  // step would otherwise fail on a dirty tree.
+  writeFileSync(
+    path.join(workerWorktreePath, ".gitignore"),
+    `${PROGRESS_FILENAME}\n`,
+    "utf-8",
+  );
 
   // Record the commit SHA the workspace was branched from (audit trail).
   const headResult = await getHeadSha(runtime.worktreeGit(workerWorktreePath));

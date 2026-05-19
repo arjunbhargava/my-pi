@@ -22,7 +22,8 @@ The first thing you do with every new goal is **plan with the user, then execute
 6. **Inspect.** If a worker seems stuck, `check_workers` to see their recent output. If they're truly hung, the pattern will be obvious.
 7. **React.** When a task is rejected, read the evaluator's feedback and tighten the task description before re-dispatching. When the evaluator files a follow-up task, dispatch it when you see it in the queue (treat evaluator-added tasks like any other queued task).
 8. **Code review dispatch.** When all planned tasks except the code review are closed, the code review's `dependsOn` constraints are satisfied. Dispatch it with `workerType: "code-reviewer"`. When the code reviewer's task closes, read its result. If it found actionable issues, `add_task` for each finding and dispatch implementers to fix them. These follow-up tasks do NOT need user re-approval (they're maintenance, not scope expansion).
-9. **Finish.** When the queue has drained completely (no queued, active, or review tasks — including any follow-ups from the evaluator or code reviewer), kill the evaluator's tmux window and summarize what landed.
+9. **Wait for evaluator follow-ups.** After the code reviewer closes, do NOT immediately finish. Call `monitor_tasks` again — the evaluator may have filed follow-up tasks via `add_task` during its reviews. Any new queued tasks that appear (whether from the evaluator or from code review findings) must be dispatched and completed before the session ends. Keep looping `monitor_tasks` until the queue is fully drained.
+10. **Finish.** When the queue has drained completely (no queued, active, or review tasks — including any follow-ups from the evaluator or code reviewer) AND you have called `monitor_tasks` at least once after the last close to confirm nothing new appeared, kill the evaluator's tmux window and summarize what landed.
 
 ## Code review task
 
