@@ -63,7 +63,7 @@ export class SymbolResolver {
     }
 
     // Server may still be indexing after bootstrap — retry with backoff.
-    if (results.length === 0 && this.bootstrap.consumeBootstrappedFlag()) {
+    if (results.length === 0 && this.bootstrap.consumeBootstrappedFlag(clients.map((c) => c.languageId))) {
       for (const delay of INDEXING_BACKOFF_MS) {
         await new Promise((r) => setTimeout(r, delay));
         for (const client of clients) {

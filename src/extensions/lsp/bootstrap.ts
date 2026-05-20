@@ -21,18 +21,21 @@ const PROJECT_MARKERS: Array<{ file: string; languageId: string }> = [
 
 export class ServerBootstrap {
   private readonly bootstrapped = new Set<string>();
-  private recentlyBootstrapped = false;
+  /** Language IDs that were recently bootstrapped and haven't had their retry window yet. */
+  private readonly recentlyBootstrapped = new Set<string>();
 
   constructor(private readonly workspaceRoot: string) {}
 
   /**
-   * Returns true and resets the flag if a bootstrap happened since the last call.
-   * Used by SymbolResolver to trigger the post-bootstrap indexing retry loop.
+   * Returns true and clears the recently-bootstrapped flags for the given languages
+   * if any were bootstrapped since the last consume for that language.
+   * Other languages' flags are untouched — each gets its own retry window.
    */
-  consumeBootstrappedFlag(): boolean {
-    const was = this.recentlyBootstrapped;
-    this.recentlyBootstrapped = false;
-    return was;
+  consumeBootstrappedFlag(languageIds: string[]): boolean {
+    const matching = languageIds.filter((id) => this.recentlyBootstrapped.has(id));
+    if (matching.length === 0) return false;
+    for (const id of matching) this.recentlyBootstrapped.delete(id);
+    return true;
   }
 
   /**
@@ -73,7 +76,7 @@ export class ServerBootstrap {
     if (bootstrapFile) {
       await client.openDocument(bootstrapFile);
       this.bootstrapped.add(languageId);
-      this.recentlyBootstrapped = true;
+      this.recentlyBootstrapped.add(languageId);
     }
   }
 
@@ -84,7 +87,7 @@ export class ServerBootstrap {
     if (this.bootstrapped.has(client.languageId)) return;
     await client.openDocument(filePath);
     this.bootstrapped.add(client.languageId);
-    this.recentlyBootstrapped = true;
+    this.recentlyBootstrapped.add(client.languageId);
   }
 
   /**
