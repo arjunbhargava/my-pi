@@ -40,3 +40,16 @@ The worker dutifully rebases onto the new `main`, but its commits still referenc
 ### Workaround used
 
 Killed the task from the queue and applied the fix manually on `main`. The change was trivial (5 lines in the new `bootstrap.ts` + 1 call-site in `resolver.ts`).
+
+### Fix implemented
+
+Conflict classification + evaluator-assisted resolution. See:
+- `src/lib/conflict.ts` — classifies conflicts as textual vs structural
+- `src/lib/workspace.ts` — `rebaseWorkspace` now returns structured error with conflict paths
+- `src/lib/git.ts` — added `diffNameStatusBetween`, `diffNumstat`, `showFileAtRef`
+- `src/extensions/agents/team-agent/tools/review.ts` — `handleWait` surfaces structural conflicts to evaluator; new `resolve_conflicts` tool
+- `agents/roles/evaluator.md` — added "Resolving structural conflicts" section
+
+Behavior:
+- Textual conflicts (simple divergence): auto-rejected and requeued as before
+- Structural conflicts (file deleted/renamed/rewritten): surfaced to evaluator with worker's diff + new file layout. Evaluator can resolve directly via bash + `resolve_conflicts`, or reject with updated context.

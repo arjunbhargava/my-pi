@@ -15,7 +15,20 @@ import {
   composeCommitMessage,
   formatFileChanges,
 } from "../../../../lib/commit-message.js";
-import { diffNameStatus } from "../../../../lib/git.js";
+import {
+  classifyConflicts,
+  formatConflictDetails,
+  type ConflictFileDetail,
+} from "../../../../lib/conflict.js";
+import {
+  diffNameStatus,
+  diffNameStatusBetween,
+  getHeadSha,
+  hasUncommittedChanges,
+  stageAll,
+  commit as gitCommit,
+  type DiffFileEntry,
+} from "../../../../lib/git.js";
 import {
   closeTask,
   getTaskById,
@@ -59,7 +72,7 @@ export function registerReviewTools(pi: ExtensionAPI, runtime: TeamAgentRuntime)
     name: "wait_to_evaluate",
     label: "Wait to Evaluate",
     description:
-      "Block until tasks are ready for evaluation. Automatically rebases each task's branch onto the current target branch before returning. Tasks with rebase conflicts are auto-rejected and requeued — you only see tasks that are ready to review in full context. Retries internally on timeout.",
+      "Block until tasks are ready for evaluation. Automatically rebases each task's branch onto the current target branch before returning. Textual rebase conflicts (simple divergence) are auto-rejected and requeued. Structural conflicts (files deleted, renamed, or substantially rewritten on the target branch) are surfaced to you with full context so you can resolve them directly or reject with updated guidance. Retries internally on timeout.",
     parameters: Type.Object({}),
     async execute(_id, _params, signal) {
       return await handleWait(runtime, signal);
@@ -110,6 +123,23 @@ export function registerReviewTools(pi: ExtensionAPI, runtime: TeamAgentRuntime)
       return await handleReject(runtime, params.taskId, params.feedback);
     },
   });
+
+  pi.registerTool({
+    name: "resolve_conflicts",
+    label: "Resolve Conflicts",
+    description:
+      "After you have manually applied a worker's changes to the correct files in their worktree "
+      + "(resolving a structural conflict), call this to merge the target branch into the worker's "
+      + "branch and commit the resolution. This makes the branch a descendant of the target, "
+      + "enabling a normal close_task afterwards. Use bash to make the file changes first, then "
+      + "call this to finalize. If the merge still conflicts after your edits, returns an error.",
+    parameters: Type.Object({
+      taskId: Type.String({ description: "ID of the structurally-conflicted task" }),
+    }),
+    async execute(_id, params) {
+      return await handleResolveConflicts(runtime, params.taskId);
+    },
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -157,10 +187,16 @@ async function handleWait(
   }
 
   // Rebase each task's branch onto current targetBranch before
-  // presenting to the evaluator. Tasks that conflict are auto-rejected.
+  // presenting to the evaluator. Classify conflicts to decide
+  // whether to auto-reject (textual) or surface for resolution (structural).
   const snapshot = await runtime.loadQueue();
   const rebased: Task[] = [];
-  const conflicted: string[] = [];
+  const autoRejected: string[] = [];
+  const structuralConflicts: StructuralConflictInfo[] = [];
+
+  // Resolve target branch HEAD once for classification.
+  const targetHeadResult = await getHeadSha(runtime.repoGit());
+  const targetHead = targetHeadResult.ok ? targetHeadResult.value : undefined;
 
   for (const task of readyTasks) {
     if (!task.worktreePath || !task.branchName) {
@@ -174,19 +210,55 @@ async function handleWait(
 
     if (rebaseResult.ok) {
       rebased.push(task);
-    } else {
-      // Auto-reject: rebase conflict. Requeue with feedback.
-      const feedback = `Automatic rejection: ${rebaseResult.error}. Rework against the current target branch.`;
-      await autoRejectTask(runtime, task, feedback);
-      conflicted.push(`${task.id} (${task.title}): ${rebaseResult.error}`);
+      continue;
     }
+
+    // Rebase failed — classify the conflict.
+    const conflictPaths = rebaseResult.error.conflictPaths;
+    const canClassify = task.baseSha && targetHead && conflictPaths.length > 0;
+
+    if (canClassify) {
+      const classification = await classifyConflicts(
+        runtime.repoGit(),
+        task.baseSha!,
+        targetHead,
+        conflictPaths,
+      );
+
+      if (classification.ok && classification.value.kind === "structural") {
+        // Structural conflict — surface to evaluator for resolution.
+        // Get the worker's diff so the evaluator can see what they did.
+        const workerDiff = await diffNameStatusBetween(
+          runtime.repoGit(),
+          task.baseSha!,
+          task.branchName,
+        );
+        structuralConflicts.push({
+          task,
+          conflictPaths,
+          structuralFiles: classification.value.files,
+          workerChangedFiles: workerDiff.ok ? workerDiff.value : [],
+        });
+        continue;
+      }
+    }
+
+    // Textual conflict (or classification failed) — auto-reject as before.
+    const feedback = `Automatic rejection: ${rebaseResult.error.message}. Rework against the current target branch.`;
+    await autoRejectTask(runtime, task, feedback);
+    autoRejected.push(`${task.id} (${task.title}): ${rebaseResult.error.message}`);
   }
 
   const lines: string[] = [];
 
-  if (conflicted.length > 0) {
-    lines.push(`Auto-rejected ${conflicted.length} task(s) due to rebase conflicts:`);
-    for (const c of conflicted) lines.push(`  ✗ ${c}`);
+  if (autoRejected.length > 0) {
+    lines.push(`Auto-rejected ${autoRejected.length} task(s) due to textual rebase conflicts:`);
+    for (const c of autoRejected) lines.push(`  \u2717 ${c}`);
+    lines.push("");
+  }
+
+  if (structuralConflicts.length > 0) {
+    lines.push(formatStructuralConflicts(structuralConflicts));
     lines.push("");
   }
 
@@ -200,9 +272,9 @@ async function handleWait(
         lines.push(`  Result: ${preview}${ellipsis}`);
       }
     }
-  } else if (conflicted.length > 0) {
+  } else if (autoRejected.length > 0 && structuralConflicts.length === 0) {
     lines.push("No tasks remain after rebase filtering. Waiting for requeued tasks to be re-dispatched.");
-    // Recurse: go back to waiting since all tasks were rejected.
+    // Recurse: go back to waiting since all tasks were auto-rejected.
     return await handleWait(runtime, signal);
   }
 
@@ -231,6 +303,128 @@ async function autoRejectTask(
   await runtime.withQueueLock((queue) => {
     rejectTask(queue, task.id, feedback, runtime.agentName);
   });
+}
+
+// ---------------------------------------------------------------------------
+// Structural conflict presentation
+// ---------------------------------------------------------------------------
+
+/** Context for a task with a structural rebase conflict. */
+interface StructuralConflictInfo {
+  task: Task;
+  conflictPaths: string[];
+  structuralFiles: ConflictFileDetail[];
+  workerChangedFiles: DiffFileEntry[];
+}
+
+/**
+ * Format structural conflict info for the evaluator model.
+ *
+ * Gives the evaluator enough context to either resolve the conflict
+ * directly (by applying the worker's changes to the correct files
+ * via bash) or reject the task if the approach is fundamentally invalid.
+ */
+function formatStructuralConflicts(conflicts: StructuralConflictInfo[]): string {
+  const sections: string[] = [];
+
+  sections.push(
+    "STRUCTURAL CONFLICTS — these tasks cannot be auto-retried.\n"
+    + "The files they target were deleted, renamed, or substantially rewritten on the target branch.\n"
+    + "You can resolve these directly (read the worker's diff, apply changes to the correct files\n"
+    + "in the worker's worktree via bash, then close_task) or reject_task if the approach is invalid.\n",
+  );
+
+  for (const { task, structuralFiles, workerChangedFiles } of conflicts) {
+    sections.push(`--- Task: ${task.id} — ${task.title} ---`);
+    sections.push(`Worktree: ${task.worktreePath}`);
+    sections.push(`Branch: ${task.branchName}`);
+    sections.push(`Base SHA (when task branched): ${task.baseSha ?? "(unknown)"}`);
+    sections.push("");
+    sections.push("What changed on target branch since this task branched:");
+    sections.push(formatConflictDetails(structuralFiles));
+    sections.push("");
+    sections.push("What the worker's branch changed (their intended contribution):");
+    for (const f of workerChangedFiles) {
+      const dest = f.renamedTo ? ` → ${f.renamedTo}` : "";
+      sections.push(`  ${f.status} ${f.path}${dest}`);
+    }
+    if (task.result) {
+      sections.push("");
+      sections.push(`Worker's result summary: ${task.result.slice(0, 300)}`);
+    }
+    sections.push("");
+  }
+
+  sections.push(
+    "To resolve: use bash to apply the worker's changes to the correct file locations in the\n"
+    + "worktree, then call resolve_conflicts to finalize (merges target branch in and commits).\n"
+    + "After that, review the result and close_task as normal.\n"
+    + "If the approach is fundamentally invalid (not just mislabeled files), use reject_task with\n"
+    + "updated feedback describing the new file layout so the next worker targets correctly.",
+  );
+
+  return sections.join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// resolve_conflicts
+// ---------------------------------------------------------------------------
+
+/**
+ * Finalize a structural conflict resolution.
+ *
+ * After the evaluator has manually applied the worker's changes to the
+ * correct files in the worktree (via bash), this function:
+ *   1. Stages all changes in the worktree
+ *   2. Commits them (so the worker's branch has the corrected state)
+ *   3. Merges the target branch into the worker's branch
+ *   4. If the merge succeeds, the branch is now a descendant of target
+ *      and close_task will work normally
+ *
+ * If the merge still conflicts, returns an error — the evaluator needs
+ * to fix more files before retrying.
+ */
+async function handleResolveConflicts(runtime: TeamAgentRuntime, taskId: string) {
+  const snapshot = await runtime.loadQueue();
+  const task = getTaskById(snapshot, taskId);
+  if (!task) throw new Error(`Task '${taskId}' not found`);
+  if (!task.worktreePath || !task.branchName) {
+    throw new Error(`Task '${taskId}' has no worktree — cannot resolve conflicts`);
+  }
+
+  const workspaceGit = runtime.worktreeGit(task.worktreePath);
+
+  // Stage and commit the evaluator's manual edits.
+  const dirty = await hasUncommittedChanges(workspaceGit);
+  if (dirty.ok && dirty.value) {
+    await stageAll(workspaceGit);
+    await gitCommit(workspaceGit, `fix: resolve structural conflict for '${task.title}'`);
+  }
+
+  // Now merge the target branch in. If the evaluator's edits correctly
+  // placed the worker's changes, this merge should be clean.
+  const rebaseResult = await rebaseWorkspace(workspaceGit, snapshot.targetBranch);
+  if (!rebaseResult.ok) {
+    return {
+      content: [{
+        type: "text" as const,
+        text: `Merge still conflicts after your edits: ${rebaseResult.error.message}\n`
+          + `Conflicting files: ${rebaseResult.error.conflictPaths.join(", ")}\n`
+          + `Fix the remaining files in the worktree and call resolve_conflicts again.`,
+      }],
+      details: {},
+    };
+  }
+
+  return {
+    content: [{
+      type: "text" as const,
+      text: `Conflict resolved for '${task.title}'. Branch is now a descendant of the target branch.\n`
+        + `Review the final state of the worktree at: ${task.worktreePath}\n`
+        + `Then close_task to merge, or reject_task if the result isn't right.`,
+    }],
+    details: {},
+  };
 }
 
 // ---------------------------------------------------------------------------

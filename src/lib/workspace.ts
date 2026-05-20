@@ -28,6 +28,12 @@ import {
 } from "./git.js";
 import type { GitContext, Result } from "./types.js";
 
+/** Structured error for rebase failures that includes conflicting file paths. */
+export interface RebaseConflictError {
+  message: string;
+  conflictPaths: string[];
+}
+
 /** A git worktree checked out on its own branch, forked from a base branch. */
 export interface Workspace {
   /** Absolute path to the worktree directory. */
@@ -117,7 +123,7 @@ export async function destroyWorkspace(
 export async function rebaseWorkspace(
   workspaceGit: GitContext,
   baseBranch: string,
-): Promise<Result<void>> {
+): Promise<Result<void, RebaseConflictError>> {
   const update = await mergeBranch(workspaceGit, baseBranch);
   if (update.ok) {
     return { ok: true, value: undefined };
@@ -126,10 +132,14 @@ export async function rebaseWorkspace(
   // Merge failed — likely conflicts. Grab the file list before aborting.
   const conflicts = await getMergeConflicts(workspaceGit);
   await abortMerge(workspaceGit);
-  const files = conflicts.ok ? conflicts.value.join(", ") : "unknown files";
+  const conflictPaths = conflicts.ok ? conflicts.value : [];
+  const files = conflictPaths.length > 0 ? conflictPaths.join(", ") : "unknown files";
   return {
     ok: false,
-    error: `Rebase conflicts on: ${files}`,
+    error: {
+      message: `Rebase conflicts on: ${files}`,
+      conflictPaths,
+    },
   };
 }
 

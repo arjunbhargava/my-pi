@@ -477,6 +477,86 @@ export async function diffStaged(ctx: GitContext): Promise<Result<DiffFileEntry[
   return { ok: true, value: parseNameStatus(result.stdout) };
 }
 
+/**
+ * Two-dot diff between explicit refs with rename detection.
+ *
+ * Unlike {@link diffNameStatus} (which uses three-dot / merge-base
+ * semantics), this shows all changes between `fromRef` and `toRef`
+ * directly. Useful for understanding what happened to specific files
+ * on a branch between two known commits.
+ *
+ * @param paths - Optional path filter to restrict output to specific files.
+ */
+export async function diffNameStatusBetween(
+  ctx: GitContext,
+  fromRef: string,
+  toRef: string,
+  paths?: string[],
+): Promise<Result<DiffFileEntry[]>> {
+  const args = ["diff", "--name-status", "--find-renames", `${fromRef}..${toRef}`];
+  if (paths && paths.length > 0) {
+    args.push("--", ...paths);
+  }
+  const result = await execGit(ctx, args);
+  if (result.code !== 0) {
+    return { ok: false, error: `git diff --name-status failed: ${result.stderr.trim()}` };
+  }
+  return { ok: true, value: parseNameStatus(result.stdout) };
+}
+
+/** Per-file line count from `git diff --numstat`. */
+export interface DiffNumstatEntry {
+  added: number;
+  removed: number;
+  path: string;
+}
+
+/**
+ * Return per-file line addition/removal counts between two refs.
+ *
+ * Uses two-dot semantics. Binary files are reported with added=0,
+ * removed=0 (git outputs `-\t-\tpath` for binaries).
+ */
+export async function diffNumstat(
+  ctx: GitContext,
+  fromRef: string,
+  toRef: string,
+  paths?: string[],
+): Promise<Result<DiffNumstatEntry[]>> {
+  const args = ["diff", "--numstat", `${fromRef}..${toRef}`];
+  if (paths && paths.length > 0) {
+    args.push("--", ...paths);
+  }
+  const result = await execGit(ctx, args);
+  if (result.code !== 0) {
+    return { ok: false, error: `git diff --numstat failed: ${result.stderr.trim()}` };
+  }
+  const entries: DiffNumstatEntry[] = [];
+  for (const line of result.stdout.trim().split("\n").filter(Boolean)) {
+    const parts = line.split("\t");
+    const added = parts[0] === "-" ? 0 : parseInt(parts[0], 10);
+    const removed = parts[1] === "-" ? 0 : parseInt(parts[1], 10);
+    entries.push({ added, removed, path: parts[2] });
+  }
+  return { ok: true, value: entries };
+}
+
+/**
+ * Show a file's content at a specific ref. Returns the raw content
+ * or an error if the file doesn't exist at that ref.
+ */
+export async function showFileAtRef(
+  ctx: GitContext,
+  ref: string,
+  filePath: string,
+): Promise<Result<string>> {
+  const result = await execGit(ctx, ["show", `${ref}:${filePath}`]);
+  if (result.code !== 0) {
+    return { ok: false, error: result.stderr.trim() };
+  }
+  return { ok: true, value: result.stdout };
+}
+
 /** Parse the `A\tpath` / `R100\told\tnew` output of `git diff --name-status`. */
 function parseNameStatus(stdout: string): DiffFileEntry[] {
   const entries: DiffFileEntry[] = [];
