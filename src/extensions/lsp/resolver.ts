@@ -20,6 +20,9 @@ import {
   type HoverResult,
 } from "./types.js";
 
+/** Backoff delays (ms) between workspace/symbol retry attempts after bootstrap. Total max wait: ~7.5 s. */
+const INDEXING_BACKOFF_MS = [500, 1000, 2000, 4000] as const;
+
 /** Map of project marker files to the language they indicate. */
 const PROJECT_MARKERS: Array<{ file: string; languageId: string }> = [
   { file: "tsconfig.json", languageId: "typescript" },
@@ -67,11 +70,10 @@ export class SymbolResolver {
     }
 
     // If empty and we just bootstrapped, the server may still be indexing.
-    // Retry with backoff up to ~8s total.
+    // Retry with backoff up to ~7.5s total.
     if (results.length === 0 && this.recentlyBootstrapped) {
       this.recentlyBootstrapped = false;
-      const delays = [500, 1000, 2000, 4000];
-      for (const delay of delays) {
+      for (const delay of INDEXING_BACKOFF_MS) {
         await new Promise((r) => setTimeout(r, delay));
         for (const client of clients) {
           const raw = await client.workspaceSymbols(query);
