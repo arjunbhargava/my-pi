@@ -11,7 +11,7 @@
  */
 
 import { strict as assert } from "node:assert";
-import { LspClient } from "../src/extensions/lsp/client.js";
+import { LspClient, uriToPath, pathToUri } from "../src/extensions/lsp/client.js";
 import { DiagnosticsBuffer } from "../src/extensions/lsp/diagnostics.js";
 import { SERVER_CONFIGS } from "../src/extensions/lsp/types.js";
 
@@ -148,6 +148,36 @@ test("initialize called twice returns error on second call", async () => {
   // attempt is allowed (it will fail again for the same reason).
   const second = await client.initialize();
   assert.equal(second.ok, false);
+});
+
+test("uriToPath decodes percent-encoded spaces", () => {
+  assert.equal(uriToPath("file:///my%20project/foo.ts"), "/my project/foo.ts");
+});
+
+test("uriToPath decodes percent-encoded unicode", () => {
+  assert.equal(uriToPath("file:///path/%E6%97%A5%E6%9C%AC%E8%AA%9E/foo.ts"), "/path/\u65e5\u672c\u8a9e/foo.ts");
+});
+
+test("uriToPath decodes percent-encoded hash in filename", () => {
+  assert.equal(uriToPath("file:///workspace/foo%23bar.ts"), "/workspace/foo#bar.ts");
+});
+
+test("pathToUri encodes spaces", () => {
+  assert.equal(pathToUri("/my project/foo.ts"), "file:///my%20project/foo.ts");
+});
+
+test("pathToUri encodes unicode", () => {
+  assert.equal(pathToUri("/path/\u65e5\u672c\u8a9e/foo.ts"), "file:///path/%E6%97%A5%E6%9C%AC%E8%AA%9E/foo.ts");
+});
+
+test("round-trip pathToUri/uriToPath preserves path with spaces", () => {
+  const original = "/my project/src/foo bar.ts";
+  assert.equal(uriToPath(pathToUri(original)), original);
+});
+
+test("round-trip pathToUri/uriToPath preserves path with unicode", () => {
+  const original = "/path/\u65e5\u672c\u8a9e/file.ts";
+  assert.equal(uriToPath(pathToUri(original)), original);
 });
 
 // ---------------------------------------------------------------------------

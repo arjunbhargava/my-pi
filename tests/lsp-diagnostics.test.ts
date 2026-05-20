@@ -177,6 +177,38 @@ test("getForFile returns empty array for unknown file", () => {
   assert.deepEqual(buf.getForFile("never-seen.ts"), []);
 });
 
+test("URI with percent-encoded space matches workspace root containing space", () => {
+  const buf = new DiagnosticsBuffer("/my project");
+  buf.update("file:///my%20project/src/foo.ts", [
+    makeDiag({ severity: 1, line: 3, message: "Error" }),
+  ]);
+  const entries = buf.getForFile("src/foo.ts");
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].path, "src/foo.ts");
+  assert.equal(entries[0].line, 3);
+});
+
+test("URI with percent-encoded unicode matches workspace root with unicode", () => {
+  const buf = new DiagnosticsBuffer("/path/日本語");
+  buf.update("file:///path/%E6%97%A5%E6%9C%AC%E8%AA%9E/file.ts", [
+    makeDiag({ severity: 2, message: "Warning" }),
+  ]);
+  const entries = buf.getForFile("file.ts");
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].severity, "warning");
+  assert.equal(entries[0].path, "file.ts");
+});
+
+test("URI with percent-encoded hash in filename is decoded correctly", () => {
+  const buf = new DiagnosticsBuffer("/workspace");
+  buf.update("file:///workspace/foo%23bar.ts", [
+    makeDiag({ severity: 1, message: "Hash in name" }),
+  ]);
+  const entries = buf.getForFile("foo#bar.ts");
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].path, "foo#bar.ts");
+});
+
 // ---------------------------------------------------------------------------
 // Runner
 // ---------------------------------------------------------------------------

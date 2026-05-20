@@ -8,6 +8,7 @@
  */
 
 import { readFile } from "node:fs/promises";
+import { pathToFileURL, fileURLToPath } from "node:url";
 import { JsonRpcTransport } from "./transport.js";
 import {
   DEFAULT_INITIALIZE_TIMEOUT_MS,
@@ -249,13 +250,12 @@ export class LspClient {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-/** Convert an absolute filesystem path to a `file://` URI. */
-function pathToUri(filePath: string): string {
-  const normalized = filePath.startsWith("/") ? filePath : `/${filePath}`;
-  return `file://${normalized}`;
+/** Convert an absolute filesystem path to a `file://` URI, percent-encoding special characters. */
+export function pathToUri(filePath: string): string {
+  return pathToFileURL(filePath).href;
 }
 
-/** Convert a `file://` URI back to an absolute filesystem path. */
+/** Convert a `file://` URI back to an absolute filesystem path, decoding percent-encoded characters. */
 export function uriToPath(uri: string): string {
-  return uri.replace(/^file:\/\//, "");
+  return fileURLToPath(uri);
 }

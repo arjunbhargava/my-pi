@@ -8,6 +8,7 @@ import {
   DIAGNOSTIC_SEVERITY_MAP,
   type DiagnosticEntry,
 } from "./types.js";
+import { fileURLToPath } from "node:url";
 
 export class DiagnosticsBuffer {
   private readonly store = new Map<string, DiagnosticEntry[]>();
@@ -65,7 +66,7 @@ export class DiagnosticsBuffer {
  * returning a path relative to the workspace root.
  */
 function uriToRelativePath(uri: string, workspaceRoot: string): string {
-  const filePath = uri.replace(/^file:\/\//, "");
+  const filePath = fileURLToPath(uri);
   const normalizedRoot = workspaceRoot.endsWith("/")
     ? workspaceRoot
     : `${workspaceRoot}/`;
