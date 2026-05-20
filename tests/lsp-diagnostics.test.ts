@@ -161,6 +161,17 @@ test("URI not under workspace root is stored as-is (no prefix stripped)", () => 
   assert.equal(entries[0].path, "/other/path/file.ts");
 });
 
+test("range with missing start does not throw and defaults line to 0", () => {
+  const buf = new DiagnosticsBuffer("/workspace");
+  // Malformed diagnostic: range present but start is absent
+  assert.doesNotThrow(() => {
+    buf.update("file:///workspace/f.ts", [
+      { severity: 1, range: {}, message: "malformed" },
+    ]);
+  });
+  assert.equal(buf.getForFile("f.ts")[0].line, 0);
+});
+
 test("getForFile returns empty array for unknown file", () => {
   const buf = new DiagnosticsBuffer("/workspace");
   assert.deepEqual(buf.getForFile("never-seen.ts"), []);

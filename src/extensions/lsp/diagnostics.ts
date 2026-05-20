@@ -86,9 +86,10 @@ function parseDiagnostic(raw: unknown, relativePath: string): DiagnosticEntry {
       : "hint";
 
   const range = d["range"] as
-    | { start: { line: number } }
+    | { start?: { line: number } }
     | undefined;
-  const line = range?.start.line !== undefined ? range.start.line + 1 : 0;
+  const startLine = range?.start?.line;
+  const line = startLine !== undefined ? startLine + 1 : 0;
   const message =
     typeof d["message"] === "string" ? d["message"] : String(d["message"] ?? "");
 
