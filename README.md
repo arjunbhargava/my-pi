@@ -7,8 +7,24 @@ Personal extensions for [pi](https://github.com/badlogic/pi-mono).
 | **worktree** | Single-task workflow — isolated git worktrees, auto-checkpoints, squash-merge on accept |
 | **agents** | Multi-agent teams — orchestrator decomposes goals, workers execute in parallel worktrees, evaluator merges |
 | **websearch** | Web search and page fetching via Tavily + Browserbase |
+| **lsp** | Language Server Protocol tools — workspace symbols, go-to-definition, references, hover, diagnostics |
 
 Each extension has its own README with usage details.
+
+## Prerequisites
+
+The LSP extension requires language servers installed globally:
+
+```bash
+npm install -g typescript-language-server typescript pyright
+```
+
+| Binary | Package | Used by |
+|--------|---------|--------|
+| `typescript-language-server` | `typescript-language-server` | TypeScript/JavaScript |
+| `pyright-langserver` | `pyright` | Python |
+| `clangd` | system package | C/C++ (optional) |
+| `rust-analyzer` | system package | Rust (optional) |
 
 ## Installation
 
