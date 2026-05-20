@@ -21,21 +21,25 @@ const PROJECT_MARKERS: Array<{ file: string; languageId: string }> = [
 
 export class ServerBootstrap {
   private readonly bootstrapped = new Set<string>();
-  /** Language IDs that were recently bootstrapped and haven't had their retry window yet. */
-  private readonly recentlyBootstrapped = new Set<string>();
+  /** Timestamp (ms) when each language was bootstrapped. */
+  private readonly bootstrapTimestamps = new Map<string, number>();
+
+  /** Duration (ms) after bootstrap during which retries are allowed. */
+  private static readonly RETRY_WINDOW_MS = 30_000;
 
   constructor(private readonly workspaceRoot: string) {}
 
   /**
-   * Returns true and clears the recently-bootstrapped flags for the given languages
-   * if any were bootstrapped since the last consume for that language.
-   * Other languages' flags are untouched — each gets its own retry window.
+   * Returns true if any of the given languages were bootstrapped within the
+   * retry window (30s). Unlike the previous one-shot flag, this can be called
+   * multiple times — it checks elapsed time rather than consuming state.
    */
-  consumeBootstrappedFlag(languageIds: string[]): boolean {
-    const matching = languageIds.filter((id) => this.recentlyBootstrapped.has(id));
-    if (matching.length === 0) return false;
-    for (const id of matching) this.recentlyBootstrapped.delete(id);
-    return true;
+  shouldRetry(languageIds: string[]): boolean {
+    const now = Date.now();
+    return languageIds.some((id) => {
+      const ts = this.bootstrapTimestamps.get(id);
+      return ts !== undefined && (now - ts) < ServerBootstrap.RETRY_WINDOW_MS;
+    });
   }
 
   /**
@@ -76,7 +80,7 @@ export class ServerBootstrap {
     if (bootstrapFile) {
       await client.openDocument(bootstrapFile);
       this.bootstrapped.add(languageId);
-      this.recentlyBootstrapped.add(languageId);
+      this.bootstrapTimestamps.set(languageId, Date.now());
     }
   }
 
@@ -87,7 +91,7 @@ export class ServerBootstrap {
     if (this.bootstrapped.has(client.languageId)) return;
     await client.openDocument(filePath);
     this.bootstrapped.add(client.languageId);
-    this.recentlyBootstrapped.add(client.languageId);
+    this.bootstrapTimestamps.set(client.languageId, Date.now());
   }
 
   /**

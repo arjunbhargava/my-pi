@@ -19,8 +19,8 @@ import {
 } from "./types.js";
 import { ServerBootstrap } from "./bootstrap.js";
 
-/** Backoff delays (ms) between workspace/symbol retry attempts after bootstrap. Total max wait: ~7.5 s. */
-const INDEXING_BACKOFF_MS = [500, 1000, 2000, 4000] as const;
+/** Backoff delays (ms) between workspace/symbol retry attempts after bootstrap. Total max wait: ~19 s. */
+const INDEXING_BACKOFF_MS = [1000, 2000, 3000, 5000, 8000] as const;
 
 /** Resolved file position for a symbol (0-based, matching LSP protocol). */
 interface SymbolPosition {
@@ -63,7 +63,7 @@ export class SymbolResolver {
     }
 
     // Server may still be indexing after bootstrap — retry with backoff.
-    if (results.length === 0 && this.bootstrap.consumeBootstrappedFlag(clients.map((c) => c.languageId))) {
+    if (results.length === 0 && this.bootstrap.shouldRetry(clients.map((c) => c.languageId))) {
       for (const delay of INDEXING_BACKOFF_MS) {
         await new Promise((r) => setTimeout(r, delay));
         for (const client of clients) {

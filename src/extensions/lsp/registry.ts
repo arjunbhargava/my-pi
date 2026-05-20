@@ -6,9 +6,18 @@
  */
 
 import { extname } from "node:path";
+import { execFileSync } from "node:child_process";
 import { LspClient } from "./client.js";
 import { DiagnosticsBuffer } from "./diagnostics.js";
 import { SERVER_CONFIGS, type ServerConfig, type Result } from "./types.js";
+
+/** Install instructions for each language server binary. */
+const INSTALL_HINTS: Record<string, string> = {
+  "typescript-language-server": "npm install -g typescript-language-server typescript",
+  "pyright-langserver": "npm install -g pyright",
+  "clangd": "Install via your OS package manager (e.g. apt install clangd, brew install llvm)",
+  "rust-analyzer": "rustup component add rust-analyzer",
+};
 
 /** Milliseconds to wait for each client's graceful shutdown before moving on. */
 const SHUTDOWN_TIMEOUT_MS = 5_000;
@@ -142,6 +151,9 @@ export class ServerRegistry {
    * Called only through getOrSpawnClient after the in-flight guard is checked.
    */
   private async spawnNewClient(config: ServerConfig): Promise<Result<LspClient>> {
+    const binaryCheck = checkBinaryAvailable(config.command);
+    if (!binaryCheck.ok) return binaryCheck;
+
     const buffer = new DiagnosticsBuffer(this.workspaceRoot);
     const client = new LspClient({ config, workspaceRoot: this.workspaceRoot, diagnosticsBuffer: buffer });
 
@@ -156,5 +168,27 @@ export class ServerRegistry {
     this.clients.set(config.languageId, client);
     this.buffers.set(config.languageId, buffer);
     return { ok: true, value: client };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Module-level helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Verify that a language server binary is available on PATH.
+ * Returns an actionable error with install instructions when missing.
+ */
+function checkBinaryAvailable(command: string): Result<void> {
+  try {
+    execFileSync("which", [command], { stdio: "pipe" });
+    return { ok: true, value: undefined };
+  } catch {
+    const hint = INSTALL_HINTS[command];
+    const installMsg = hint ? ` Install with: ${hint}` : "";
+    return {
+      ok: false,
+      error: `Language server binary not found: ${command}.${installMsg}`,
+    };
   }
 }
