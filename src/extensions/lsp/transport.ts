@@ -79,6 +79,7 @@ export class JsonRpcTransport {
    * Send a JSON-RPC notification. No response is expected.
    */
   sendNotification(method: string, params?: unknown): void {
+    if (!this.alive) return;
     this.writeMessage({ jsonrpc: "2.0", method, params });
   }
 
