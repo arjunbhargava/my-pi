@@ -16,6 +16,7 @@ const SHUTDOWN_TIMEOUT_MS = 5_000;
 export class ServerRegistry {
   private readonly clients = new Map<string, LspClient>();
   private readonly buffers = new Map<string, DiagnosticsBuffer>();
+  private readonly spawnInProgress = new Map<string, Promise<Result<LspClient>>>();
 
   constructor(private readonly workspaceRoot: string) {}
 
@@ -109,6 +110,8 @@ export class ServerRegistry {
   /**
    * Return the existing ready client for config.languageId, or spawn a new one.
    * A stale (not-ready) client is shut down before re-spawning.
+   * Concurrent callers for the same language share one in-flight spawn promise
+   * rather than racing to create duplicate server processes.
    * On failed initialization the registry remains clean (no partial entries).
    */
   private async getOrSpawnClient(config: ServerConfig): Promise<Result<LspClient>> {
@@ -121,6 +124,24 @@ export class ServerRegistry {
       this.buffers.delete(config.languageId);
     }
 
+    const inFlight = this.spawnInProgress.get(config.languageId);
+    if (inFlight) return inFlight;
+
+    const spawnPromise = this.spawnNewClient(config);
+    this.spawnInProgress.set(config.languageId, spawnPromise);
+    try {
+      return await spawnPromise;
+    } finally {
+      this.spawnInProgress.delete(config.languageId);
+    }
+  }
+
+  /**
+   * Unconditionally create and initialize a new LspClient for the given config.
+   * Stores the client and buffer in the registry on success.
+   * Called only through getOrSpawnClient after the in-flight guard is checked.
+   */
+  private async spawnNewClient(config: ServerConfig): Promise<Result<LspClient>> {
     const buffer = new DiagnosticsBuffer(this.workspaceRoot);
     const client = new LspClient({ config, workspaceRoot: this.workspaceRoot, diagnosticsBuffer: buffer });
 

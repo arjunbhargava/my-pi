@@ -121,6 +121,36 @@ test("getActiveLanguages and getDiagnosticsBuffer are consistent after failed sp
   await reg.disposeAll();
 });
 
+test("concurrent getOrSpawnClient for same language shares one in-flight promise", async () => {
+  const reg = new ServerRegistry("/workspace");
+  // Access the private map to observe in-flight state without modifying the API.
+  const inProgress = (reg as any).spawnInProgress as Map<string, Promise<unknown>>;
+
+  // Both calls start synchronously. p1 runs until its first internal await
+  // (transport.sendRequest inside client.initialize), stores the spawn promise
+  // in spawnInProgress, then yields. p2 then runs, sees the in-flight entry,
+  // and joins it rather than spawning a second server.
+  const p1 = reg.getClientForLanguage("typescript");
+  assert.equal(inProgress.size, 1, "expected one in-flight spawn after p1");
+
+  const p2 = reg.getClientForLanguage("typescript");
+  assert.equal(inProgress.size, 1, "expected p2 to join the in-flight promise, not create a new one");
+
+  const [r1, r2] = await Promise.all([p1, p2]);
+
+  // The in-flight entry must be cleaned up after both settle.
+  assert.equal(inProgress.size, 0, "spawnInProgress must be empty after settlement");
+
+  // Both callers get the same outcome.
+  assert.equal(r1.ok, r2.ok);
+  if (r1.ok && r2.ok) {
+    // If the server happened to start, both calls must share the same client instance.
+    assert.strictEqual(r1.value, r2.value, "expected the same LspClient instance");
+  }
+
+  await reg.disposeAll();
+});
+
 // ---------------------------------------------------------------------------
 // Runner
 // ---------------------------------------------------------------------------
