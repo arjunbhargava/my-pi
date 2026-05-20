@@ -6,17 +6,30 @@
  * eliminating the need for callers to supply accurate line/column coordinates.
  */
 
-import { readFile } from "node:fs/promises";
+import { readFile, access, readdir } from "node:fs/promises";
+import { join, extname } from "node:path";
 import { uriToPath } from "./client.js";
 import type { ServerRegistry } from "./registry.js";
 import type { LspClient } from "./client.js";
 import {
   SYMBOL_KIND_MAP,
+  SERVER_CONFIGS,
   type Result,
   type SymbolEntry,
   type LocationEntry,
   type HoverResult,
 } from "./types.js";
+
+/** Map of project marker files to the language they indicate. */
+const PROJECT_MARKERS: Array<{ file: string; languageId: string }> = [
+  { file: "tsconfig.json", languageId: "typescript" },
+  { file: "jsconfig.json", languageId: "typescript" },
+  { file: "pyproject.toml", languageId: "python" },
+  { file: "setup.py", languageId: "python" },
+  { file: "Cargo.toml", languageId: "rust" },
+  { file: "compile_commands.json", languageId: "cpp" },
+  { file: ".clangd", languageId: "cpp" },
+];
 
 /** Resolved file position for a symbol (0-based, matching LSP protocol). */
 interface SymbolPosition {
@@ -37,6 +50,9 @@ export class SymbolResolver {
    * Search workspace symbols by query string.
    * Queries only the hintPath language server when provided and supported;
    * otherwise queries all active servers.
+   *
+   * On first use after bootstrap, retries with backoff until the server
+   * finishes indexing (returns non-empty results or timeout expires).
    */
   async workspaceSymbols(query: string, hintPath?: string): Promise<Result<SymbolEntry[]>> {
     const clients = await this.getClients(hintPath);
@@ -49,6 +65,26 @@ export class SymbolResolver {
         if (entry) results.push(entry);
       }
     }
+
+    // If empty and we just bootstrapped, the server may still be indexing.
+    // Retry with backoff up to ~8s total.
+    if (results.length === 0 && this.recentlyBootstrapped) {
+      this.recentlyBootstrapped = false;
+      const delays = [500, 1000, 2000, 4000];
+      for (const delay of delays) {
+        await new Promise((r) => setTimeout(r, delay));
+        for (const client of clients) {
+          const raw = await client.workspaceSymbols(query);
+          if (!raw.ok) continue;
+          for (const sym of raw.value) {
+            const entry = symbolToEntry(sym, this.workspaceRoot);
+            if (entry) results.push(entry);
+          }
+        }
+        if (results.length > 0) break;
+      }
+    }
+
     return { ok: true, value: results };
   }
 
@@ -103,27 +139,46 @@ export class SymbolResolver {
    * Resolve a dotted symbol name to a file position via workspace/symbol.
    *
    * Tries the full name first; if empty and the symbol has a dot, falls back to
-   * searching by the member name and filtering results by containerName.
-   * Picks the best match (same-file > exact name > prefix > first result).
+   * searching by the member name. Filters by containerName when available, or
+   * by co-location in the same file as the container symbol.
+   *
+   * The returned character offset is adjusted to point at the symbol name itself
+   * (not the start of the declaration line), which is required for hover/definition.
    */
   private async findSymbolPosition(symbol: string, hintPath?: string): Promise<SymbolPosition | null> {
     const { container, member } = parseDottedSymbol(symbol);
     const clients = await this.getClients(hintPath);
     let candidates: unknown[] = [];
 
+    // First: search for the full symbol string.
     for (const client of clients) {
       const raw = await client.workspaceSymbols(symbol);
       if (raw.ok) candidates.push(...raw.value);
     }
 
+    // Fallback for dotted names: search by member and filter by container.
     if (candidates.length === 0 && container !== null) {
+      // Find the container's file so we can match by co-location.
+      const containerFile = await this.findContainerFile(container, clients);
+
       for (const client of clients) {
         const raw = await client.workspaceSymbols(member);
         if (!raw.ok) continue;
         for (const sym of raw.value) {
           const s = sym as Record<string, unknown>;
           const cn = typeof s["containerName"] === "string" ? s["containerName"] : null;
-          if (cn === container || cn?.endsWith(`.${container}`)) candidates.push(sym);
+          // Accept if containerName matches.
+          if (cn === container || cn?.endsWith(`.${container}`)) {
+            candidates.push(sym);
+            continue;
+          }
+          // Accept if containerName is absent but symbol is in the same file as container.
+          if (cn === null && containerFile) {
+            const loc = s["location"] as NormalizedLocation | undefined;
+            if (loc?.uri && uriToPath(loc.uri) === containerFile) {
+              candidates.push(sym);
+            }
+          }
         }
       }
     }
@@ -135,24 +190,191 @@ export class SymbolResolver {
     const s = best as Record<string, unknown>;
     const loc = s["location"] as NormalizedLocation | undefined;
     if (!loc?.uri) return null;
-    return { filePath: uriToPath(loc.uri), line: loc.range.start.line, character: loc.range.start.character };
+
+    const filePath = uriToPath(loc.uri);
+    const line = loc.range.start.line;
+    const name = typeof s["name"] === "string" ? s["name"] : member;
+
+    // Adjust character offset to point at the symbol name within the line.
+    const character = await this.findNameOffsetInLine(filePath, line, name, loc.range.start.character);
+    return { filePath, line, character };
+  }
+
+  /**
+   * Find the file where a container symbol (class/interface) is defined.
+   * Returns the absolute file path or null.
+   */
+  private async findContainerFile(container: string, clients: LspClient[]): Promise<string | null> {
+    for (const client of clients) {
+      const raw = await client.workspaceSymbols(container);
+      if (!raw.ok) continue;
+      for (const sym of raw.value) {
+        const s = sym as Record<string, unknown>;
+        if (s["name"] === container) {
+          const loc = s["location"] as NormalizedLocation | undefined;
+          if (loc?.uri) return uriToPath(loc.uri);
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Find the character offset of a symbol name within a source line.
+   * Falls back to the range start character if the name isn't found.
+   */
+  private async findNameOffsetInLine(
+    filePath: string,
+    line: number,
+    name: string,
+    fallback: number,
+  ): Promise<number> {
+    const lineText = await readLineFromFile(filePath, line);
+    if (!lineText) return fallback;
+    // Use word-boundary matching to avoid partial matches.
+    const regex = new RegExp(`\\b${escapeRegex(name)}\\b`);
+    const match = regex.exec(lineText);
+    return match ? match.index : fallback;
   }
 
   /**
    * Return clients to query. If hintPath resolves to a supported language,
    * returns only that server. Otherwise returns all active servers.
+   *
+   * When no servers are active and no hintPath is provided, detects the
+   * project type from marker files in the workspace root, spawns the
+   * appropriate server, and opens a bootstrap file so the server creates
+   * a project context (required by tsserver for workspace/symbol).
    */
   private async getClients(hintPath?: string): Promise<LspClient[]> {
     if (hintPath) {
       const result = await this.registry.getClientForFile(hintPath);
-      if (result.ok) return [result.value];
+      if (result.ok) {
+        await this.ensureProjectBootstrapped(result.value, hintPath);
+        return [result.value];
+      }
     }
+
+    const activeLanguages = this.registry.getActiveLanguages();
+
+    // If no servers are active, detect project type and spawn.
+    if (activeLanguages.length === 0) {
+      const detected = await this.detectProjectLanguages();
+      for (const languageId of detected) {
+        const result = await this.registry.getClientForLanguage(languageId);
+        if (result.ok) {
+          await this.bootstrapServer(languageId, result.value);
+          return [result.value];
+        }
+      }
+      return [];
+    }
+
     const clients: LspClient[] = [];
-    for (const lang of this.registry.getActiveLanguages()) {
+    for (const lang of activeLanguages) {
       const result = await this.registry.getClientForLanguage(lang);
-      if (result.ok) clients.push(result.value);
+      if (result.ok) {
+        await this.bootstrapServer(lang, result.value);
+        clients.push(result.value);
+      }
     }
     return clients;
+  }
+
+  /**
+   * Detect which languages the workspace supports by checking for
+   * marker files (tsconfig.json, pyproject.toml, Cargo.toml, etc.).
+   * Returns language IDs for which a server config exists.
+   */
+  private async detectProjectLanguages(): Promise<string[]> {
+    const detected: string[] = [];
+    const seen = new Set<string>();
+    for (const marker of PROJECT_MARKERS) {
+      if (seen.has(marker.languageId)) continue;
+      try {
+        await access(join(this.workspaceRoot, marker.file));
+        const hasConfig = SERVER_CONFIGS.some((c) => c.languageId === marker.languageId);
+        if (hasConfig) {
+          detected.push(marker.languageId);
+          seen.add(marker.languageId);
+        }
+      } catch {
+        // Marker not present — skip.
+      }
+    }
+    return detected;
+  }
+
+  /** Track which clients have had a bootstrap file opened. */
+  private readonly bootstrapped = new Set<string>();
+
+  /** Set after first bootstrap; cleared after first retry-loop in workspaceSymbols. */
+  private recentlyBootstrapped = false;
+
+  /**
+   * Open a bootstrap file for the given language so the server creates a
+   * project context. tsserver requires at least one textDocument/didOpen
+   * before workspace/symbol works.
+   */
+  private async bootstrapServer(languageId: string, client: LspClient): Promise<void> {
+    if (this.bootstrapped.has(languageId)) return;
+    const config = SERVER_CONFIGS.find((c) => c.languageId === languageId);
+    if (!config) return;
+
+    const bootstrapFile = await this.findBootstrapFile(config.fileExtensions);
+    if (bootstrapFile) {
+      await client.openDocument(bootstrapFile);
+      this.bootstrapped.add(languageId);
+      this.recentlyBootstrapped = true;
+    }
+  }
+
+  /**
+   * Ensure a client has been bootstrapped via the given hint path.
+   */
+  private async ensureProjectBootstrapped(client: LspClient, filePath: string): Promise<void> {
+    if (this.bootstrapped.has(client.languageId)) return;
+    await client.openDocument(filePath);
+    this.bootstrapped.add(client.languageId);
+    this.recentlyBootstrapped = true;
+  }
+
+  /**
+   * Find a source file in the workspace matching one of the given extensions.
+   * Searches src/ recursively (up to 3 levels), then falls back to the workspace root.
+   */
+  private async findBootstrapFile(extensions: readonly string[]): Promise<string | null> {
+    const extSet = new Set(extensions.map((e) => `.${e}`));
+
+    // Recursive search with depth limit.
+    const searchDir = async (dir: string, depth: number): Promise<string | null> => {
+      if (depth > 3) return null;
+      try {
+        const entries = await readdir(dir, { withFileTypes: true });
+        // Check files first at this level.
+        for (const entry of entries) {
+          if (entry.isFile() && extSet.has(extname(entry.name).toLowerCase())) {
+            return join(dir, entry.name);
+          }
+        }
+        // Then recurse into subdirectories.
+        for (const entry of entries) {
+          if (entry.isDirectory() && !entry.name.startsWith(".") && entry.name !== "node_modules") {
+            const found = await searchDir(join(dir, entry.name), depth + 1);
+            if (found) return found;
+          }
+        }
+      } catch {
+        // Directory doesn't exist or not readable.
+      }
+      return null;
+    };
+
+    // Try src/ first, then workspace root.
+    const srcDir = join(this.workspaceRoot, "src");
+    const fromSrc = await searchDir(srcDir, 0);
+    if (fromSrc) return fromSrc;
+    return searchDir(this.workspaceRoot, 0);
   }
 }
 
@@ -164,7 +386,7 @@ export class SymbolResolver {
 async function readLineFromFile(filePath: string, line: number): Promise<string> {
   try {
     const content = await readFile(filePath, "utf8");
-    return content.split("\n")[line]?.trim() ?? "";
+    return content.split("\n")[line] ?? "";
   } catch {
     return "";
   }
@@ -175,7 +397,7 @@ async function locationToEntry(location: NormalizedLocation, workspaceRoot: stri
   if (!location.uri) return null;
   const filePath = uriToPath(location.uri);
   const line0 = location.range.start.line;
-  const snippet = await readLineFromFile(filePath, line0);
+  const snippet = (await readLineFromFile(filePath, line0)).trim();
   const relativePath = filePath.startsWith(`${workspaceRoot}/`)
     ? filePath.slice(workspaceRoot.length + 1)
     : filePath;
@@ -247,7 +469,9 @@ function parseHoverResponse(hover: unknown): HoverResult | null {
     text = (contents as { value: string }).value;
   }
 
-  const lines = text.split("\n").filter((l) => l.trim() !== "");
+  // Strip markdown code fences: ```language ... ```
+  const stripped = text.replace(/```[a-z]*\n?/g, "").trim();
+  const lines = stripped.split("\n").filter((l) => l.trim() !== "");
   if (lines.length === 0) return null;
   return { type: lines[0].trim(), docstring: lines.slice(1).join("\n").trim() };
 }
@@ -275,4 +499,9 @@ function pickBestMatch(candidates: unknown[], member: string, hintPath?: string)
     if (score > bestScore) { bestScore = score; best = sym; }
   }
   return best;
+}
+
+/** Escape special regex characters in a string. */
+function escapeRegex(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
