@@ -7,7 +7,6 @@
  */
 
 import * as path from "node:path";
-import { readFileSync, statSync, writeFileSync } from "node:fs";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 
@@ -25,7 +24,6 @@ import { discoverAgentsFromDirs } from "../../agent-config.js";
 import { spawnAgentWindow } from "../../launcher.js";
 import type { TeamAgentConfig } from "../../types.js";
 import type { TeamAgentRuntime } from "../runtime.js";
-import { PROGRESS_FILENAME } from "../session.js";
 import { watchQueueUntil } from "../watch.js";
 
 /** Default worker agent type when dispatch_task is called without one. */
@@ -132,15 +130,6 @@ async function handleDispatch(
   if (!workspaceResult.ok) {
     throw new Error(`Failed to create worker workspace: ${workspaceResult.error}`);
   }
-
-  // Exclude the progress heartbeat file from git so it doesn't dirty
-  // the worktree after complete_task commits. The evaluator's rebase
-  // step would otherwise fail on a dirty tree.
-  writeFileSync(
-    path.join(workerWorktreePath, ".gitignore"),
-    `${PROGRESS_FILENAME}\n`,
-    "utf-8",
-  );
 
   // Record the commit SHA the workspace was branched from (audit trail).
   const headResult = await getHeadSha(runtime.worktreeGit(workerWorktreePath));
@@ -340,15 +329,13 @@ async function handleCheckWorkers(runtime: TeamAgentRuntime) {
         lines.push(`    → Recovered, worktree cleaned up, and requeued`);
       }
     } else {
-      // Check progress heartbeat for stalls.
-      let stallStatus: "stalled" | "looping" | null = null;
-      if (task.worktreePath) {
-        const progressPath = path.join(task.worktreePath, PROGRESS_FILENAME);
-        stallStatus = checkProgressFile(progressPath);
-      }
+      // Check tmux activity for stalls.
+      const lastActivity = await runtime.getWorkerLastActivity(task.assignedTo!);
+      const age = lastActivity ? Date.now() - lastActivity : 0;
+      const stalled = age > STALL_THRESHOLD_MS;
 
-      if (stallStatus) {
-        lines.push(`  ⚠ ${workerName} — ${stallStatus.toUpperCase()}`);
+      if (stalled) {
+        lines.push(`  ⚠ ${workerName} — STALLED (no activity for ${Math.round(age / 60000)}m)`);
         lines.push(`    Task: ${task.title} (${task.id})`);
         if (task.assignedTo) {
           dead.push({
@@ -356,7 +343,7 @@ async function handleCheckWorkers(runtime: TeamAgentRuntime) {
             assignedTo: task.assignedTo,
             worktreePath: task.worktreePath,
             branchName: task.branchName,
-            reason: stallStatus,
+            reason: "stalled",
           });
           lines.push(`    → Recovered and requeued`);
         }
@@ -401,16 +388,15 @@ interface DeadWorker {
   assignedTo: string;
   worktreePath?: string;
   branchName?: string;
-  reason: "dead" | "stalled" | "looping";
+  reason: "dead" | "stalled";
 }
 
 /**
- * Scan active tasks for dead, stalled, or looping workers.
+ * Scan active tasks for dead or stalled workers.
  *
  * Detection criteria:
  *   dead    — tmux window no longer exists
- *   stalled — .progress file mtime older than STALL_THRESHOLD_MS
- *   looping — .progress file shows same tool repeated N+ times
+ *   stalled — tmux window activity older than STALL_THRESHOLD_MS
  *
  * Pure detection — no mutation, no cleanup. Safe to call from an
  * unlocked snapshot of the queue.
@@ -436,48 +422,22 @@ async function detectDeadWorkers(
       continue;
     }
 
-    // Check progress heartbeat for stalls and loops.
-    if (!task.worktreePath) continue;
-    const progressPath = path.join(task.worktreePath, PROGRESS_FILENAME);
-    const stallResult = checkProgressFile(progressPath);
-    if (stallResult) {
-      dead.push({
-        taskId: task.id,
-        assignedTo: task.assignedTo,
-        worktreePath: task.worktreePath,
-        branchName: task.branchName,
-        reason: stallResult,
-      });
+    // Check tmux activity for stalls.
+    const lastActivity = await runtime.getWorkerLastActivity(task.assignedTo);
+    if (lastActivity) {
+      const age = Date.now() - lastActivity;
+      if (age > STALL_THRESHOLD_MS) {
+        dead.push({
+          taskId: task.id,
+          assignedTo: task.assignedTo,
+          worktreePath: task.worktreePath,
+          branchName: task.branchName,
+          reason: "stalled",
+        });
+      }
     }
   }
   return dead;
-}
-
-/**
- * Check a worker's .progress file for stall or loop conditions.
- * Returns the failure reason, or null if the worker appears healthy.
- */
-function checkProgressFile(progressPath: string): "stalled" | "looping" | null {
-  try {
-    const stat = statSync(progressPath);
-    const age = Date.now() - stat.mtimeMs;
-    if (age > STALL_THRESHOLD_MS) return "stalled";
-
-    // Check for looping by reading the file content.
-    const content = readFileSync(progressPath, "utf-8").trim();
-    const parsed = JSON.parse(content) as { timestamp: number; tool: string };
-    // The progress file only holds the LAST tool call. To detect loops
-    // reliably we'd need a ring buffer, but a simple heuristic: if the
-    // file has been rewritten with the same tool name and the mtime is
-    // very recent (< heartbeat interval), the worker is likely looping.
-    // For now, we rely on stall detection as the primary safety net.
-    // Loop detection will use a counter file in a follow-up.
-    void parsed;
-    return null;
-  } catch {
-    // File doesn't exist yet (worker just started) or unreadable — healthy.
-    return null;
-  }
 }
 
 /**
@@ -531,9 +491,7 @@ function reasonMessage(w: DeadWorker): string {
     case "dead":
       return `Worker '${w.assignedTo}' exited without completing. Window no longer exists.`;
     case "stalled":
-      return `Worker '${w.assignedTo}' stalled — no tool activity for over 5 minutes.`;
-    case "looping":
-      return `Worker '${w.assignedTo}' detected looping — same tool called repeatedly without progress.`;
+      return `Worker '${w.assignedTo}' stalled — no tmux activity for over 5 minutes.`;
   }
 }
 

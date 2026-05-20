@@ -56,6 +56,11 @@ export interface TeamAgentRuntime {
 
   /** True if the named worker's tmux window is still alive. */
   isWorkerAlive(workerName: string): Promise<boolean>;
+  /**
+   * Return the Unix epoch (ms) of the worker's last tmux window activity,
+   * or null if the window doesn't exist. Used for stall detection.
+   */
+  getWorkerLastActivity(workerName: string): Promise<number | null>;
   /** Best-effort kill of a worker's tmux window. */
   killWorkerWindow(workerName: string): Promise<void>;
   /** Best-effort teardown of a worker's worktree + branch. */
@@ -118,6 +123,14 @@ export function createRuntime(pi: ExtensionAPI, config: TeamAgentConfig): TeamAg
     async isWorkerAlive(workerName) {
       const windows = await listWindows(tmuxExec(), config.tmuxSession);
       return windows.ok && windows.value.some((w) => w.name === workerName);
+    },
+
+    async getWorkerLastActivity(workerName) {
+      const windows = await listWindows(tmuxExec(), config.tmuxSession);
+      if (!windows.ok) return null;
+      const win = windows.value.find((w) => w.name === workerName);
+      // tmux reports activity in seconds; convert to ms.
+      return win ? win.lastActivity * 1000 : null;
     },
 
     async killWorkerWindow(workerName) {

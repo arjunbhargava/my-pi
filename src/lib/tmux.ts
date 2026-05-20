@@ -125,6 +125,8 @@ export interface TmuxWindow {
   name: string;
   /** Whether this window is currently active. */
   isActive: boolean;
+  /** Unix epoch (seconds) of last activity in this window. */
+  lastActivity: number;
 }
 
 /** List all windows in a tmux session. */
@@ -134,7 +136,7 @@ export async function listWindows(
 ): Promise<Result<TmuxWindow[]>> {
   const result = await execTmux(ctx, [
     "list-windows", "-t", session,
-    "-F", "#{window_index}\t#{window_name}\t#{window_active}",
+    "-F", "#{window_index}\t#{window_name}\t#{window_active}\t#{window_activity}",
   ]);
   if (result.code !== 0) {
     return { ok: false, error: `Failed to list windows: ${result.stderr.trim()}` };
@@ -145,11 +147,12 @@ export async function listWindows(
     .split("\n")
     .filter(Boolean)
     .map((line) => {
-      const [index, name, active] = line.split("\t");
+      const [index, name, active, activity] = line.split("\t");
       return {
         index: parseInt(index, 10),
         name,
         isActive: active === "1",
+        lastActivity: parseInt(activity, 10),
       };
     });
 
