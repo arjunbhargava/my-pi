@@ -14,6 +14,9 @@ interface PendingRequest {
   timer: ReturnType<typeof setTimeout>;
 }
 
+/** Handler for server-initiated requests. Returns a result value or throws to send an error. */
+export type ServerRequestHandler = (params: unknown) => unknown | Promise<unknown>;
+
 interface SpawnOptions {
   command: string;
   args: readonly string[];
@@ -29,6 +32,7 @@ export class JsonRpcTransport {
     string,
     Array<(params: unknown) => void>
   >();
+  private readonly requestHandlers = new Map<string, ServerRequestHandler>();
   private alive = true;
   private readBuffer = Buffer.alloc(0);
   private stderrBuffer = "";
@@ -94,6 +98,15 @@ export class JsonRpcTransport {
     } else {
       this.notificationHandlers.set(method, [handler]);
     }
+  }
+
+  /**
+   * Register a handler for server-initiated requests by method name.
+   * One handler per method. The handler's return value is sent as the response result.
+   * If no handler is registered, the request is rejected with -32601.
+   */
+  onRequest(method: string, handler: ServerRequestHandler): void {
+    this.requestHandlers.set(method, handler);
   }
 
   /**
@@ -191,12 +204,18 @@ export class JsonRpcTransport {
         pending.resolve(message["result"]);
       }
     } else if ("id" in message && "method" in message) {
-      // Server-initiated request — reply with an error so the server does not stall.
-      this.writeMessage({
-        jsonrpc: "2.0",
-        id: message["id"],
-        error: { code: -32601, message: "Method not supported" },
-      });
+      // Server-initiated request — dispatch to handler or reject.
+      const method = message["method"] as string;
+      const handler = this.requestHandlers.get(method);
+      if (handler) {
+        this.handleServerRequest(message["id"] as number, handler, message["params"]);
+      } else {
+        this.writeMessage({
+          jsonrpc: "2.0",
+          id: message["id"],
+          error: { code: -32601, message: `Method not supported: ${method}` },
+        });
+      }
     } else if ("method" in message) {
       // Incoming notification.
       const method = message["method"] as string;
@@ -231,5 +250,25 @@ export class JsonRpcTransport {
       pending.reject(reason);
     }
     this.pending.clear();
+  }
+
+  /**
+   * Invoke a server request handler and send back the JSON-RPC response.
+   * Handles both sync and async handlers; sends an error response on failure.
+   */
+  private handleServerRequest(id: number, handler: ServerRequestHandler, params: unknown): void {
+    Promise.resolve()
+      .then(() => handler(params))
+      .then((result) => {
+        this.writeMessage({ jsonrpc: "2.0", id, result: result ?? null });
+      })
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        this.writeMessage({
+          jsonrpc: "2.0",
+          id,
+          error: { code: -32603, message },
+        });
+      });
   }
 }

@@ -8,6 +8,7 @@
  */
 
 import { readFile } from "node:fs/promises";
+import { basename } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { JsonRpcTransport } from "./transport.js";
 import {
@@ -53,12 +54,21 @@ export class LspClient {
       diagnosticsBuffer.update(p.uri, p.diagnostics ?? []);
     });
 
+    transport.onRequest("workspace/configuration", (params: unknown) => {
+      const p = params as { items?: Array<{ section?: string }> };
+      return (p.items ?? []).map(() => ({}));
+    });
+
+    transport.onRequest("client/registerCapability", () => null);
+    transport.onRequest("window/workDoneProgress/create", () => null);
+
     try {
       await transport.sendRequest(
         "initialize",
         {
           processId: process.pid,
           rootUri: pathToUri(workspaceRoot),
+          workspaceFolders: [{ uri: pathToUri(workspaceRoot), name: basename(workspaceRoot) }],
           capabilities: {
             textDocument: {
               synchronization: { didOpen: true, didChange: true, didClose: true },
@@ -68,7 +78,11 @@ export class LspClient {
               documentSymbol: {},
               publishDiagnostics: {},
             },
-            workspace: { symbol: { dynamicRegistration: false } },
+            workspace: {
+              symbol: { dynamicRegistration: false },
+              configuration: true,
+              workspaceFolders: true,
+            },
           },
         },
         DEFAULT_INITIALIZE_TIMEOUT_MS,
