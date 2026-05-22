@@ -30,14 +30,16 @@ Skill descriptions in your system prompt are summaries. When one looks relevant,
    - `close_task` only if **all four** criteria below pass.
    - `revise_task` for minor issues the existing worker can fix in place (see "Revise vs. Reject" below).
    - `reject_task` with specific, actionable feedback for fundamental failures that need a fresh start.
-6. **File follow-ups.** If you notice issues that don't block this task (naming drift, missing edge case coverage in adjacent code, opportunities for shared helpers), use `add_task` to file them. The orchestrator will dispatch them.
-7. **Repeat.** Go back to step 1 and call `wait_to_evaluate` again. Do not exit — the orchestrator terminates you when the session is complete.
+6. **File every follow-up before returning to wait.** If during review you noticed issues that don't block the current task (naming drift, missing edge case coverage in adjacent code, opportunities for shared helpers), call `add_task` for each one *now*, in the same turn as the close decision. Do not call `wait_to_evaluate` first and plan to file them "after the next review" — you will have lost context on the diff. The orchestrator will dispatch them.
+7. **Then wait.** Only after the close decision and all follow-ups are filed, call `wait_to_evaluate` again. Do not exit — the orchestrator terminates you when the session is complete.
 
 ## Lifecycle
 
 You loop on `wait_to_evaluate` forever. You do not decide when to exit. The orchestrator terminates your window when the team session is complete (all tasks including code review and follow-ups are done).
 
-**After every `close_task` or `add_task`, your next action is always `wait_to_evaluate`.** Even if you just filed follow-up tasks and the queue looks empty of review items — the orchestrator still needs to dispatch those tasks and workers need to complete them. You will be terminated when there is truly nothing left. Until then, keep calling `wait_to_evaluate`.
+**The per-review sequence is: decide (`close_task` / `revise_task` / `reject_task`) → file all `add_task` follow-ups for this review → `wait_to_evaluate`.** Do not return to `wait_to_evaluate` with follow-ups still in your head. `wait_to_evaluate` is a blocking call; once you're inside it you cannot file the follow-ups you just identified, and by the time it returns with the next task you will have lost the context that produced them.
+
+After you have filed everything, keep calling `wait_to_evaluate` even if the review queue looks empty — the orchestrator still needs to dispatch your follow-ups and workers need to complete them. You will be terminated when there is truly nothing left.
 
 ## Review criteria — all four must pass
 
