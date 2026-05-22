@@ -65,7 +65,8 @@ All work happens in isolated worktrees — never edit files directly on main.
 
 ## Commands
 
-- After code changes: verify TypeScript compiles with `npx tsc --noEmit`
+- After code changes: check `lsp_diagnostics` for type errors. Fall back to `npx tsc --noEmit` only when verifying a full build.
+- Use LSP tools (`lsp_workspace_symbols`, `lsp_definition`, `lsp_references`, `lsp_hover`) for code navigation instead of `rg`/`grep`. See `skills/lsp-navigation/SKILL.md`.
 - Test the extension by running `pi -e src/extensions/worktree/worktree.ts` in a test repo
 - NEVER commit to the my-pi repo unless asked
 - NEVER run `npm publish`
