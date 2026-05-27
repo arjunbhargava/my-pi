@@ -44,7 +44,9 @@ Do NOT create a new worktree when:
 
 ## Completing Work
 
-The user manages task lifecycle via slash commands:
+There are two paths for closing a task — slash commands the user types, and tool calls you can make.
+
+**User-driven (slash commands):**
 - `/wt-accept` — squash-merges the task branch into main and cleans up
 - `/wt-reject` — discards the worktree and branch
 - `/wt` — switches between active tasks
@@ -55,7 +57,21 @@ task branch into main at the end of each agent turn (after checkpointing). The
 current mode is shown in the powerline toolbar as `[wt: auto-accept]` or
 `[wt: manual]`.
 
-You do not need to call these. Inform the user when a task feels complete so they can decide.
+**Agent-driven (tool calls):**
+- `worktree_accept` — squash-merges into main after showing the diff and
+  asking the user to confirm interactively. Does not push.
+- `worktree_reject` — discards the worktree and branch after asking the user
+  to confirm. Idempotent if the worktree was already cleaned up via raw git
+  (useful for clearing stale harness state).
+
+When the user explicitly indicates the task is done and should be merged, call
+`worktree_accept` rather than running raw `git merge` / `git worktree remove`
+yourself. The tool drives the diff-display + confirmation flow and keeps the
+harness state file in sync. Do not call it speculatively — the user must say
+they are done first.
+
+If the user asks you to push the merge, do that as a separate step after the
+tool returns. `worktree_accept` deliberately does not push.
 
 ## Parallel Agents and Updating from Main
 

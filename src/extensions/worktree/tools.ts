@@ -7,7 +7,8 @@
  */
 
 import { worktreeList } from "../../lib/git.js";
-import { createTask, getActiveTask } from "./manager.js";
+import { acceptTask, getTaskDiff, rejectTask } from "./accept-reject.js";
+import { createTask, getActiveTask, slugify } from "./manager.js";
 import type { ExtensionState } from "./extension-state.js";
 
 // ---------------------------------------------------------------------------
@@ -17,6 +18,16 @@ import type { ExtensionState } from "./extension-state.js";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- pi's registerTool uses complex generic types from typebox
 type ToolRegistrar = (def: any) => void;
 
+/** Subset of pi's ToolContext used by tools that need user interaction. */
+interface ToolContext {
+  hasUI: boolean;
+  ui: {
+    notify(message: string, level?: "info" | "warning" | "error"): void;
+    confirm(title: string, message: string): Promise<boolean>;
+    input(prompt: string, defaultValue?: string): Promise<string | undefined>;
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
@@ -24,10 +35,11 @@ type ToolRegistrar = (def: any) => void;
 /**
  * Register all worktree tools.
  *
- * @param es          - Shared extension state.
- * @param register    - The `pi.registerTool` function.
- * @param TypeObject  - `Type.Object` from typebox (passed in to avoid importing).
- * @param TypeString  - `Type.String` from typebox.
+ * @param es           - Shared extension state.
+ * @param register     - The `pi.registerTool` function.
+ * @param TypeObject   - `Type.Object` from typebox (passed in to avoid importing).
+ * @param TypeString   - `Type.String` from typebox.
+ * @param TypeOptional - `Type.Optional` from typebox.
  */
 export function registerWorktreeTools(
   es: ExtensionState,
@@ -35,6 +47,8 @@ export function registerWorktreeTools(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- typebox schema constructors
   TypeObject: (...args: any[]) => any,
   TypeString: (...args: any[]) => any,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- typebox schema constructors
+  TypeOptional: (...args: any[]) => any,
 ): void {
   register({
     name: "worktree_status",
@@ -177,6 +191,145 @@ export function registerWorktreeTools(
       return {
         content: [{ type: "text", text: lines.join("\n") }],
         details: { taskCount: allTasks.length },
+      };
+    },
+  });
+
+  register({
+    name: "worktree_accept",
+    label: "Accept Worktree",
+    description: "Accept the current task: show diff, ask the user to confirm, then squash-merge into main and clean up the worktree. Does not push to any remote.",
+    promptSnippet: "Accept and squash-merge the current task into main",
+    promptGuidelines: [
+      "Use worktree_accept only when the user has explicitly indicated the current task is done and should be merged.",
+      "The tool will show the diff and ask the user to confirm interactively before merging \u2014 do not call it speculatively.",
+      "This does not push to any remote. If the user wants the merge published, push manually after the tool succeeds.",
+    ],
+    parameters: TypeObject({
+      summary: TypeOptional(TypeString({
+        description: "First line of the squash commit message. If omitted, the user will be prompted with a 'feat: <task slug>' default.",
+      })),
+    }),
+
+    async execute(_toolCallId: string, params: Record<string, unknown>, _signal?: AbortSignal, _onUpdate?: unknown, ctx?: ToolContext) {
+      if (!es.repoRoot) {
+        throw new Error("Not in a git repository.");
+      }
+
+      const activeTask = getActiveTask(es.state);
+      if (!activeTask) {
+        throw new Error("No active task to accept.");
+      }
+
+      if (!ctx?.hasUI) {
+        throw new Error(
+          "worktree_accept requires an interactive UI for confirmation. " +
+          "Run pi interactively, or accept the task with /wt-accept from a control-plane session.",
+        );
+      }
+
+      const diff = await getTaskDiff(es.gitCtx(es.repoRoot), activeTask);
+      if (diff.ok && diff.value) {
+        ctx.ui.notify(`Changes:\n${diff.value}`, "info");
+      }
+
+      const confirmed = await ctx.ui.confirm(
+        "Accept task?",
+        `Squash-merge "${activeTask.description}" into main?`,
+      );
+      if (!confirmed) {
+        return {
+          content: [{ type: "text", text: "Acceptance cancelled by user." }],
+          details: { taskId: activeTask.id, accepted: false },
+        };
+      }
+
+      const rawSummary = typeof params.summary === "string" ? params.summary.trim() : "";
+      let summary = rawSummary;
+      if (!summary) {
+        const promptDefault = `feat: ${slugify(activeTask.description)}`;
+        const input = await ctx.ui.input("Merge commit message:", promptDefault);
+        if (!input) {
+          return {
+            content: [{ type: "text", text: "Acceptance cancelled (no commit message provided)." }],
+            details: { taskId: activeTask.id, accepted: false },
+          };
+        }
+        summary = input;
+      }
+
+      const result = await acceptTask(es.gitCtx(es.repoRoot), activeTask, summary);
+      if (!result.ok) {
+        throw new Error(`Failed to accept task: ${result.error}`);
+      }
+
+      activeTask.status = "accepted";
+      es.state.activeTaskId = null;
+      await es.removeFromSharedState(activeTask.id);
+      es.persistState();
+
+      return {
+        content: [{
+          type: "text",
+          text: `Accepted: ${activeTask.description} \u2192 ${result.value.slice(0, 8)}`,
+        }],
+        details: { taskId: activeTask.id, mergeSha: result.value, accepted: true },
+      };
+    },
+  });
+
+  register({
+    name: "worktree_reject",
+    label: "Reject Worktree",
+    description: "Reject the current task: ask the user to confirm, then discard the worktree and branch. Idempotent if the worktree was already removed via raw git \u2014 useful for clearing stale harness state.",
+    promptSnippet: "Reject and discard the current worktree task",
+    promptGuidelines: [
+      "Use worktree_reject when the user wants to discard the current task without merging, or to clear stale harness state after a manual cleanup.",
+      "The tool will ask the user to confirm interactively \u2014 do not call it speculatively.",
+    ],
+    parameters: TypeObject({}),
+
+    async execute(_toolCallId: string, _params: Record<string, unknown>, _signal?: AbortSignal, _onUpdate?: unknown, ctx?: ToolContext) {
+      if (!es.repoRoot) {
+        throw new Error("Not in a git repository.");
+      }
+
+      const activeTask = getActiveTask(es.state);
+      if (!activeTask) {
+        throw new Error("No active task to reject.");
+      }
+
+      if (!ctx?.hasUI) {
+        throw new Error(
+          "worktree_reject requires an interactive UI for confirmation. " +
+          "Run pi interactively, or reject the task with /wt-reject from a control-plane session.",
+        );
+      }
+
+      const confirmed = await ctx.ui.confirm(
+        "Reject task?",
+        `Discard "${activeTask.description}" and delete its worktree?`,
+      );
+      if (!confirmed) {
+        return {
+          content: [{ type: "text", text: "Rejection cancelled by user." }],
+          details: { taskId: activeTask.id, rejected: false },
+        };
+      }
+
+      const result = await rejectTask(es.gitCtx(es.repoRoot), activeTask);
+      if (!result.ok) {
+        throw new Error(`Failed to reject task: ${result.error}`);
+      }
+
+      activeTask.status = "rejected";
+      es.state.activeTaskId = null;
+      await es.removeFromSharedState(activeTask.id);
+      es.persistState();
+
+      return {
+        content: [{ type: "text", text: `Rejected: ${activeTask.description}` }],
+        details: { taskId: activeTask.id, rejected: true },
       };
     },
   });

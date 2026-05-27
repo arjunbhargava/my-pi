@@ -250,6 +250,6 @@ export default function worktreeExtension(pi: ExtensionAPI): void {
   // Delegate tool and command registration
   // -----------------------------------------------------------------------
 
-  registerWorktreeTools(es, pi.registerTool.bind(pi), Type.Object, Type.String);
+  registerWorktreeTools(es, pi.registerTool.bind(pi), Type.Object, Type.String, Type.Optional);
   registerWorktreeCommands(es, pi.registerCommand.bind(pi));
 }
