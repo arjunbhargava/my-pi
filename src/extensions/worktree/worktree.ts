@@ -3,12 +3,12 @@
  *
  * Wires git worktree management into pi via event hooks, then delegates
  * tool and command registration to dedicated modules. This is the only
- * file in the extension that imports from `@mariozechner/pi-coding-agent`.
+ * file in the extension that imports from `@earendil-works/pi-coding-agent`.
  */
 
 import * as path from "node:path";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { isToolCallEventType } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 
 import { getRepositoryRoot } from "../../lib/git.js";

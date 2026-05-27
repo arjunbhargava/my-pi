@@ -3,7 +3,7 @@
  *
  * Each command handler receives the shared ExtensionState. Command
  * registrars are passed in as callbacks to avoid importing from
- * `@mariozechner/pi-coding-agent`.
+ * `@earendil-works/pi-coding-agent`.
  */
 
 import { getMainBranch, hasUncommittedChanges, logOneline, pushBranch } from "../../lib/git.js";

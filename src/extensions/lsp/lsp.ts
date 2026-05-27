@@ -3,12 +3,12 @@
  *
  * Wires language-server lifecycle, document synchronization, and auto-diagnostic
  * injection into pi. This is the only file in the extension that imports from
- * `@mariozechner/pi-coding-agent`.
+ * `@earendil-works/pi-coding-agent`.
  */
 
 import { extname } from "node:path";
 import { readFile } from "node:fs/promises";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { getRepositoryRoot } from "../../lib/git.js";
 import type { GitContext } from "../../lib/types.js";

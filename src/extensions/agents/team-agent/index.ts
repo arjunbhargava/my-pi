@@ -12,10 +12,10 @@
  * picks the wrong blocking tool.
  *
  * This is the only file in the team-agent context that imports from
- * `@mariozechner/pi-coding-agent`.
+ * `@earendil-works/pi-coding-agent`.
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 import { loadConfig } from "./config.js";
 import { getToolManifest } from "./manifest.js";

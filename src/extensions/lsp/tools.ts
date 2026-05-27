@@ -2,7 +2,7 @@
  * Tool registration for the LSP extension.
  *
  * Takes a registrar callback, the registry, the resolver, and typebox constructors
- * as parameters. No direct imports from `@mariozechner/pi-coding-agent`.
+ * as parameters. No direct imports from `@earendil-works/pi-coding-agent`.
  */
 
 import type { ServerRegistry } from "./registry.js";

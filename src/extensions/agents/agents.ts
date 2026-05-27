@@ -7,12 +7,12 @@
  * via tmux — no polling or file-based dispatch needed here.
  *
  * This is the only file in the extension that imports from
- * `@mariozechner/pi-coding-agent`.
+ * `@earendil-works/pi-coding-agent`.
  */
 
 import { realpathSync } from "node:fs";
 import * as path from "node:path";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 import { getRepositoryRoot } from "../../lib/git.js";
 import type { ExecContext } from "../../lib/types.js";

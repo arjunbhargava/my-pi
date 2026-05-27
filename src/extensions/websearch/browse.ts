@@ -1,6 +1,6 @@
 /**
  * Browserbase cloud browser client for JS-rendered page content extraction.
- * No imports from `@mariozechner/pi-coding-agent`.
+ * No imports from `@earendil-works/pi-coding-agent`.
  */
 
 import { chromium, type Browser } from "playwright-core";

@@ -3,7 +3,7 @@
  *
  * Builds the pi command line for each agent, creates the tmux session
  * and windows, and initializes the task queue. This module does not
- * import from `@mariozechner/pi-coding-agent`.
+ * import from `@earendil-works/pi-coding-agent`.
  *
  * Agent configuration is passed via a JSON file (not an env var)
  * to avoid shell escaping issues with nested JSON in command strings.

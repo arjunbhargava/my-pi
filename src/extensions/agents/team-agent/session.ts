@@ -10,7 +10,7 @@
  * the orchestrator's monitor) rather than a file-based heartbeat.
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 import { getQueueSummary, readQueue } from "../../../lib/task-queue.js";
 import type { TeamAgentConfig } from "../types.js";

@@ -3,7 +3,7 @@
  *
  * Each function takes the shared ExtensionState and a tool registrar
  * callback. This keeps tool definitions out of index.ts while avoiding
- * any direct imports from `@mariozechner/pi-coding-agent`.
+ * any direct imports from `@earendil-works/pi-coding-agent`.
  */
 
 import { worktreeList } from "../../lib/git.js";

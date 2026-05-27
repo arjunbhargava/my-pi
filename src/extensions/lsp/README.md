@@ -20,7 +20,7 @@ The model passes symbol names (e.g. `"MyClass.method"`), not file positions. The
 
 ```
 lsp.ts          Entry point. Registers tools, hooks session lifecycle.
-                Only file that imports from @mariozechner/pi-coding-agent.
+                Only file that imports from @earendil-works/pi-coding-agent.
 
 tools.ts        Tool definitions and result formatting.
 

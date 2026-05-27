@@ -9,7 +9,7 @@ and (future) multi-agent orchestration.
 - `src/lib/types.ts` — Shared type definitions used across all modules (git context, result types, git data shapes).
 - `src/lib/git.ts` — All git command wrappers. The only module that executes git commands.
 - `src/extensions/worktree/` — Pi extension for worktree + checkpoint workflow.
-- `src/extensions/worktree/worktree.ts` — Extension entry point. Only file that imports from `@mariozechner/pi-coding-agent`.
+- `src/extensions/worktree/worktree.ts` — Extension entry point. Only file that imports from `@earendil-works/pi-coding-agent`.
 - `src/extensions/worktree/types.ts` — Extension-specific type definitions. No logic, no imports beyond other type files.
 - `skills/` — Agent skill definitions (SKILL.md files).
 
@@ -82,5 +82,5 @@ All work happens in isolated worktrees — never edit files directly on main.
 - Do not add dependencies without discussing them first
 - Do not use `console.log` for user-facing output — use `ctx.ui.notify` or tool results
 - Do not make decisions about worktree creation/switching silently — always confirm with the user via `ctx.ui.confirm` or `ctx.ui.select`
-- Do not import from `@mariozechner/pi-coding-agent` outside of `index.ts`
+- Do not import from `@earendil-works/pi-coding-agent` outside of `index.ts`
 - Do not use string literals for repeated values — define constants

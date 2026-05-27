@@ -2,10 +2,10 @@
  * Websearch extension entry point.
  *
  * Registers a web_search tool backed by the Tavily API. This is the only
- * file in the extension that imports from `@mariozechner/pi-coding-agent`.
+ * file in the extension that imports from `@earendil-works/pi-coding-agent`.
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 
 import { registerWebSearchTools } from "./tools.js";

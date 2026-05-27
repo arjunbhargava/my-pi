@@ -1,6 +1,6 @@
 /**
  * URL fetcher with HTML-to-text extraction for the websearch extension.
- * No imports from `@mariozechner/pi-coding-agent`.
+ * No imports from `@earendil-works/pi-coding-agent`.
  */
 
 import { DEFAULT_FETCH_MAX_CHARS } from "./types.js";

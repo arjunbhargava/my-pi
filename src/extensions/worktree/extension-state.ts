@@ -3,7 +3,7 @@
  *
  * This interface decouples tool/command registration from the extension
  * entry point, allowing them to live in separate files without importing
- * from `@mariozechner/pi-coding-agent`.
+ * from `@earendil-works/pi-coding-agent`.
  */
 
 import type { GitContext } from "../../lib/types.js";

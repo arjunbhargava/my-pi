@@ -2,7 +2,7 @@
  * Tool registration for the websearch extension.
  *
  * Takes a registrar callback and typebox constructors as parameters —
- * no direct imports from `@mariozechner/pi-coding-agent`.
+ * no direct imports from `@earendil-works/pi-coding-agent`.
  */
 
 import { searchWeb } from "./search.js";

@@ -8,7 +8,7 @@
  *   wait_for_verdict  — block until evaluator acts on worker's task (workers only)
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 
 import {
