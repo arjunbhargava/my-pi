@@ -9,6 +9,7 @@ import {
   type DiagnosticEntry,
 } from "./types.js";
 import { fileURLToPath } from "node:url";
+import { isAbsolute, relative, resolve } from "node:path";
 
 export class DiagnosticsBuffer {
   private readonly store = new Map<string, DiagnosticEntry[]>();
@@ -25,11 +26,18 @@ export class DiagnosticsBuffer {
   }
 
   /**
-   * Get buffered diagnostics for a specific file by relative path.
+   * Get buffered diagnostics for a specific file.
+   *
+   * Accepts any of: workspace-relative path (e.g. `src/foo.ts`), absolute
+   * path under the workspace root, or relative-with-prefix forms like
+   * `./src/foo.ts`. The input is normalized to the same workspace-relative
+   * shape used as the storage key before lookup. Files outside the workspace
+   * root fall back to absolute-path lookup, matching how `update` keys them.
+   *
    * Returns an empty array if no diagnostics have been received for the file.
    */
-  getForFile(relativePath: string): DiagnosticEntry[] {
-    return this.store.get(relativePath) ?? [];
+  getForFile(filePath: string): DiagnosticEntry[] {
+    return this.store.get(this.normalizeKey(filePath)) ?? [];
   }
 
   /** Get all buffered diagnostics across every file. */
@@ -41,9 +49,9 @@ export class DiagnosticsBuffer {
     return result;
   }
 
-  /** Clear diagnostics for a specific file by relative path. */
-  clearFile(relativePath: string): void {
-    this.store.delete(relativePath);
+  /** Clear diagnostics for a specific file. Accepts the same path shapes as `getForFile`. */
+  clearFile(filePath: string): void {
+    this.store.delete(this.normalizeKey(filePath));
   }
 
   /** Clear all buffered diagnostics. */
@@ -54,6 +62,27 @@ export class DiagnosticsBuffer {
   /** Number of files currently holding at least one diagnostic entry. */
   get fileCount(): number {
     return this.store.size;
+  }
+
+  /**
+   * Normalize an input path to the storage key shape produced by `update`:
+   *  - Resolve relative-with-prefix forms (`./foo.ts`, `foo.ts`) against the
+   *    workspace root.
+   *  - Strip the workspace-root prefix when present, yielding a forward-slash
+   *    relative path.
+   *  - Leave absolute paths outside the workspace root untouched, since
+   *    `update` stores them under their full absolute path.
+   */
+  private normalizeKey(filePath: string): string {
+    const absolute = isAbsolute(filePath)
+      ? filePath
+      : resolve(this.workspaceRoot, filePath);
+    const rel = relative(this.workspaceRoot, absolute);
+    if (rel === "" || rel.startsWith("..")) {
+      // Outside the workspace root: match how `update` stores these.
+      return absolute;
+    }
+    return rel;
   }
 }
 

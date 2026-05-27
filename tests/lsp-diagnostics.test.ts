@@ -177,6 +177,40 @@ test("getForFile returns empty array for unknown file", () => {
   assert.deepEqual(buf.getForFile("never-seen.ts"), []);
 });
 
+test("getForFile accepts absolute path under the workspace root", () => {
+  const buf = new DiagnosticsBuffer("/workspace");
+  buf.update("file:///workspace/src/foo.ts", [
+    makeDiag({ severity: 1, line: 5, message: "E" }),
+  ]);
+  assert.equal(buf.getForFile("/workspace/src/foo.ts").length, 1);
+});
+
+test("getForFile accepts ./-prefixed relative path", () => {
+  const buf = new DiagnosticsBuffer("/workspace");
+  buf.update("file:///workspace/src/foo.ts", [
+    makeDiag({ severity: 1, line: 1, message: "E" }),
+  ]);
+  assert.equal(buf.getForFile("./src/foo.ts").length, 1);
+});
+
+test("getForFile does not alias unrelated absolute path to relative key", () => {
+  const buf = new DiagnosticsBuffer("/workspace");
+  buf.update("file:///workspace/src/foo.ts", [
+    makeDiag({ severity: 1, line: 1, message: "E" }),
+  ]);
+  // /src/foo.ts is NOT under /workspace; must not collide with the
+  // workspace-relative key "src/foo.ts".
+  assert.equal(buf.getForFile("/src/foo.ts").length, 0);
+});
+
+test("clearFile accepts absolute path under workspace root", () => {
+  const buf = new DiagnosticsBuffer("/workspace");
+  buf.update("file:///workspace/src/foo.ts", [makeDiag({})]);
+  buf.clearFile("/workspace/src/foo.ts");
+  assert.equal(buf.getForFile("src/foo.ts").length, 0);
+  assert.equal(buf.fileCount, 0);
+});
+
 test("URI with percent-encoded space matches workspace root containing space", () => {
   const buf = new DiagnosticsBuffer("/my project");
   buf.update("file:///my%20project/src/foo.ts", [

@@ -70,16 +70,11 @@ export default function lspExtension(pi: ExtensionAPI): void {
     const timer = setTimeout(() => {
       diagTimers.delete(filePath);
 
-      const relPath =
-        workspaceRoot && filePath.startsWith(`${workspaceRoot}/`)
-          ? filePath.slice(workspaceRoot.length + 1)
-          : filePath;
-
       const errorLines: string[] = [];
       for (const lang of capturedRegistry.getActiveLanguages()) {
         const buffer = capturedRegistry.getDiagnosticsBuffer(lang);
         if (!buffer) continue;
-        for (const d of buffer.getForFile(relPath)) {
+        for (const d of buffer.getForFile(filePath)) {
           if (d.severity === "error") errorLines.push(`${d.path}:${d.line}: ${d.message}`);
         }
       }
