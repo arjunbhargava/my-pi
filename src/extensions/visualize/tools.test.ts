@@ -89,6 +89,18 @@ describe("registerVisualize", () => {
     );
   });
 
+  it("execute kind:image returns isError for a nonexistent file path", async () => {
+    const pi = makeFakePi();
+    registerVisualize(pi);
+    const tool = pi.tools["visualize"];
+    const result = await tool.execute("id", { kind: "image", content: "/nonexistent/does-not-exist.png" });
+    assert.equal(result.isError, true);
+    assert.ok(
+      typeof result.details.error === "string" && result.details.error.length > 0,
+      "details.error should be a non-empty string",
+    );
+  });
+
   it("execute kind:image returns imageBase64 and dimensions for a valid PNG data-URI", async () => {
     const pi = makeFakePi();
     registerVisualize(pi);
