@@ -20,9 +20,9 @@
   },
   "devDependencies": {
     "@browserbasehq/sdk": "^2.10.0",
-    "@earendil-works/pi-ai": "^0.76.0",
-    "@earendil-works/pi-coding-agent": "^0.76.0",
-    "@earendil-works/pi-tui": "^0.76.0",
+    "@earendil-works/pi-ai": "^0.78.0",
+    "@earendil-works/pi-coding-agent": "^0.78.0",
+    "@earendil-works/pi-tui": "^0.78.0",
     "@sinclair/typebox": "^0.34.49",
     "@types/proper-lockfile": "^4.1.4",
     "playwright-core": "^1.59.1",
