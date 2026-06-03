@@ -15,6 +15,9 @@
       "./skills"
     ]
   },
+  "scripts": {
+    "test": "npx tsx --test 'src/**/*.test.ts'"
+  },
   "devDependencies": {
     "@browserbasehq/sdk": "^2.10.0",
     "@earendil-works/pi-ai": "^0.76.0",
