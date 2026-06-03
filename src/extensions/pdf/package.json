@@ -1,0 +1,6 @@
+{
+  "name": "pi-pdf",
+  "pi": {
+    "extensions": ["./pdf.ts"]
+  }
+}

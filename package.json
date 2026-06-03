@@ -7,7 +7,8 @@
       "./src/extensions/worktree/worktree.ts",
       "./src/extensions/agents/agents.ts",
       "./src/extensions/websearch/websearch.ts",
-      "./src/extensions/lsp/lsp.ts"
+      "./src/extensions/lsp/lsp.ts",
+      "./src/extensions/pdf/pdf.ts"
     ],
     "skills": [
       "./skills"
@@ -15,11 +16,14 @@
   },
   "devDependencies": {
     "@browserbasehq/sdk": "^2.10.0",
-    "playwright-core": "^1.59.1",
     "@earendil-works/pi-coding-agent": "^0.76.0",
     "@sinclair/typebox": "^0.34.49",
     "@types/proper-lockfile": "^4.1.4",
+    "playwright-core": "^1.59.1",
     "proper-lockfile": "^4.1.2",
     "typescript": "^6.0.3"
+  },
+  "dependencies": {
+    "unpdf": "^1.6.2"
   }
 }
