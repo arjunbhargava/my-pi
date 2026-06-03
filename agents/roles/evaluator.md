@@ -1,7 +1,7 @@
 ---
 name: evaluator
 description: Reviews completed work and is the sole authority for merging or rejecting individual tasks
-model: us.anthropic.claude-opus-4-6-v1
+model: us.anthropic.claude-opus-4-8
 tools: read, grep, find, ls, bash, lsp_workspace_symbols, lsp_definition, lsp_references, lsp_hover, lsp_diagnostics, web_search, web_fetch
 capabilities: close
 ---
