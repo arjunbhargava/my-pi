@@ -61,7 +61,11 @@ export function registerVisualize(pi: PiAPI): void {
     async execute(_toolCallId: string, params: VisualizeToolInput) {
       const result = await renderSvgToPng(params.content);
       if (!result.ok) {
-        throw new Error(result.error);
+        return {
+          content: [{ type: "text", text: result.error }],
+          details: { kind: params.kind, title: params.title, error: result.error } satisfies VisualizeToolDetails,
+          isError: true,
+        };
       }
 
       const label = params.title ?? "visualization";

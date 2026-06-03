@@ -63,16 +63,15 @@ describe("registerVisualize", () => {
     assert.equal(typeof details.heightPx, "number");
   });
 
-  it("execute throws for non-SVG content", async () => {
+  it("execute returns isError for non-SVG content", async () => {
     const pi = makeFakePi();
     registerVisualize(pi);
     const tool = pi.tools["visualize"];
-    await assert.rejects(
-      () => tool.execute("id", { kind: "svg", content: "not svg at all" }),
-      (err: unknown) => {
-        assert.ok(err instanceof Error);
-        return true;
-      },
+    const result = await tool.execute("id", { kind: "svg", content: "not svg at all" });
+    assert.equal(result.isError, true);
+    assert.ok(
+      typeof result.details.error === "string" && result.details.error.length > 0,
+      "details.error should be a non-empty string",
     );
   });
 });
