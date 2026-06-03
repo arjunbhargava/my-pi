@@ -11,6 +11,7 @@ const FIXTURE_HEIGHT = 48;
 const FIXTURE_PATH = join(tmpdir(), `image-test-fixture-${process.pid}.png`);
 
 let fixtureBase64: string;
+let jpegBase64: string;
 
 before(async () => {
   const { data } = await sharp({
@@ -26,6 +27,20 @@ before(async () => {
 
   await writeFile(FIXTURE_PATH, data);
   fixtureBase64 = data.toString("base64");
+
+  // A JPEG payload: its base64 begins with "/9j/", which collides with the
+  // absolute-path heuristic and is the regression this fixture guards.
+  const jpeg = await sharp({
+    create: {
+      width: FIXTURE_WIDTH,
+      height: FIXTURE_HEIGHT,
+      channels: 3,
+      background: { r: 40, g: 200, b: 80 },
+    },
+  })
+    .jpeg()
+    .toBuffer();
+  jpegBase64 = jpeg.toString("base64");
 });
 
 after(async () => {
@@ -55,6 +70,15 @@ describe("loadImageToPng", () => {
     const result = await loadImageToPng(fixtureBase64);
     assert.equal(result.ok, true);
     if (!result.ok) throw new Error("unreachable");
+    assert.equal(result.widthPx, FIXTURE_WIDTH);
+    assert.equal(result.heightPx, FIXTURE_HEIGHT);
+  });
+
+  it("loads a JPEG from raw base64 even though it begins with a slash", async () => {
+    assert.ok(jpegBase64.startsWith("/"), "precondition: JPEG base64 starts with /");
+    const result = await loadImageToPng(jpegBase64);
+    assert.equal(result.ok, true);
+    if (!result.ok) throw new Error(`expected ok, got error: ${result.error}`);
     assert.equal(result.widthPx, FIXTURE_WIDTH);
     assert.equal(result.heightPx, FIXTURE_HEIGHT);
   });

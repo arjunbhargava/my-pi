@@ -2,6 +2,15 @@ import { readFile } from "node:fs/promises";
 import sharp from "sharp";
 import type { VisualizeRenderResult } from "./types.js";
 
+/** Canonical base64: base64 alphabet followed by 0-2 padding chars. */
+const BASE64_PATTERN = /^[A-Za-z0-9+/]+={0,2}$/;
+
+/**
+ * Minimum length for a string to be treated as a raw base64 image payload.
+ * Guards against short filesystem names that happen to be base64-shaped.
+ */
+const MIN_BASE64_LENGTH = 16;
+
 /**
  * Loads an image from any of the supported source forms, normalises it to PNG
  * via sharp, and returns the result as a base64 string with dimensions.
@@ -12,14 +21,14 @@ import type { VisualizeRenderResult } from "./types.js";
  *   2. http(s) URL — starts with "http://" or "https://".
  *      Bytes are fetched with the global `fetch`; non-2xx responses are
  *      returned as `{ ok: false }`.
- *   3. Filesystem path — anything else is tried with `fs.readFile` first.
- *      If the string starts with "/" or "." it is treated as an unambiguous
- *      path: ENOENT produces `{ ok: false }` with the path in the error.
- *      For other strings the filesystem is checked before base64 to avoid
- *      misreading a real file whose name happens to be valid base64; ENOENT
- *      for those strings falls through to step 4.
- *   4. Raw base64 — catch-all for strings that are not paths/URLs/data-URIs.
- *      The string is decoded to a Buffer and passed to sharp.
+ *   3. Filesystem path — anything else is tried with `fs.readFile` first, so a
+ *      real file is never misread as a base64 payload. A non-ENOENT failure
+ *      (permissions, EISDIR) is returned as `{ ok: false }`.
+ *   4. Raw base64 — on ENOENT, a base64-shaped string (see `looksLikeBase64`)
+ *      is decoded and passed to sharp. This covers JPEG payloads, which begin
+ *      with "/9j/" and would otherwise look like an absolute path. A missing
+ *      path that is not base64-shaped returns the original file error so
+ *      genuine missing-path mistakes get a clear message.
  *
  * @param source - Image source: data-URI, http(s) URL, filesystem path, or
  *                 raw base64 string.
@@ -45,16 +54,21 @@ async function resolveToBuffer(source: string): Promise<BufferResult> {
     return fetchUrl(source);
   }
 
-  // Strings starting with "/" or "." are unambiguously filesystem paths.
-  // For everything else, still check the filesystem first (before base64) to
-  // avoid misinterpreting a real filename as a base64 payload. If the file is
-  // not found and the source was clearly a path, report the error; otherwise
-  // fall through to the raw-base64 fallback.
-  const isExplicitPath = source.startsWith("/") || source.startsWith(".");
+  // Check the filesystem first (before base64) to avoid misinterpreting a real
+  // filename as a base64 payload. A non-ENOENT failure (permissions, EISDIR)
+  // is reported as-is. On ENOENT, fall through to raw base64 if the string is
+  // base64-shaped — crucially this covers JPEG payloads, which begin with
+  // "/9j/" and would otherwise be misread as an absolute path. If the missing
+  // string is not base64-shaped, surface the original file error so genuine
+  // missing-path mistakes get a clear message instead of a decode failure.
   const fileResult = await tryReadFile(source);
 
   if (fileResult.ok) return { ok: true, value: fileResult.value };
-  if (isExplicitPath || !fileResult.notFound) return { ok: false, error: fileResult.error };
+  if (!fileResult.notFound) return { ok: false, error: fileResult.error };
+  if (looksLikeBase64(source)) return decodeRawBase64(source);
+  if (source.startsWith("/") || source.startsWith(".")) {
+    return { ok: false, error: fileResult.error };
+  }
 
   return decodeRawBase64(source);
 }
@@ -111,6 +125,23 @@ async function tryReadFile(source: string): Promise<FileReadResult> {
       notFound: isNotFound,
     };
   }
+}
+
+/**
+ * Heuristic: does the string look like a canonical base64 payload large enough
+ * to be an image? Used to decide whether a not-found filesystem path should
+ * fall through to base64 decoding (JPEG base64 begins with "/", colliding with
+ * the absolute-path heuristic).
+ *
+ * @param source - Candidate string.
+ * @returns true if the string is long enough and matches canonical base64.
+ */
+function looksLikeBase64(source: string): boolean {
+  return (
+    source.length >= MIN_BASE64_LENGTH &&
+    source.length % 4 === 0 &&
+    BASE64_PATTERN.test(source)
+  );
 }
 
 function decodeRawBase64(source: string): BufferResult {
