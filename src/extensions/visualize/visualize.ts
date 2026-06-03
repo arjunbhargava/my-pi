@@ -11,8 +11,12 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
+import { reconcileImageCapabilities } from "./capabilities.js";
 import { registerVisualize } from "./tools.js";
 
 export default function visualizeExtension(pi: ExtensionAPI): void {
+  // Restore image support when SSH stripped the env vars pi-tui detects but
+  // LC_TERMINAL still identifies a graphics-capable terminal (iTerm2, WezTerm).
+  reconcileImageCapabilities();
   registerVisualize(pi);
 }
