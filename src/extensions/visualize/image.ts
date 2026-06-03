@@ -1,14 +1,6 @@
 import { readFile } from "node:fs/promises";
 import sharp from "sharp";
-
-/**
- * Discriminated union returned by `loadImageToPng`.
- * On success, carries the PNG payload as base64 and the rasterised dimensions.
- * On failure, carries a human-readable explanation; never throws.
- */
-export type ImageLoadResult =
-  | { ok: true; imageBase64: string; widthPx: number; heightPx: number }
-  | { ok: false; error: string };
+import type { VisualizeRenderResult } from "./types.js";
 
 /**
  * Loads an image from any of the supported source forms, normalises it to PNG
@@ -34,7 +26,7 @@ export type ImageLoadResult =
  * @returns `{ ok: true, imageBase64, widthPx, heightPx }` on success, or
  *          `{ ok: false, error }` on any failure — never throws.
  */
-export async function loadImageToPng(source: string): Promise<ImageLoadResult> {
+export async function loadImageToPng(source: string): Promise<VisualizeRenderResult> {
   const buffer = await resolveToBuffer(source);
   if (!buffer.ok) return buffer;
   return normaliseToPng(buffer.value);
@@ -72,13 +64,7 @@ function decodeDataUri(source: string): BufferResult {
   if (commaIndex === -1) {
     return { ok: false, error: "Malformed data-URI: missing comma separator" };
   }
-  try {
-    const payload = source.slice(commaIndex + 1);
-    return { ok: true, value: Buffer.from(payload, "base64") };
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return { ok: false, error: `data-URI decode failed: ${message}` };
-  }
+  return { ok: true, value: Buffer.from(source.slice(commaIndex + 1), "base64") };
 }
 
 async function fetchUrl(url: string): Promise<BufferResult> {
@@ -143,7 +129,7 @@ function decodeRawBase64(source: string): BufferResult {
   }
 }
 
-async function normaliseToPng(buffer: Buffer): Promise<ImageLoadResult> {
+async function normaliseToPng(buffer: Buffer): Promise<VisualizeRenderResult> {
   try {
     const { data, info } = await sharp(buffer)
       .png()

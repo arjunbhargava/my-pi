@@ -1,8 +1,5 @@
 import sharp from "sharp";
-
-export type RenderResult =
-  | { ok: true; imageBase64: string; widthPx: number; heightPx: number }
-  | { ok: false; error: string };
+import type { VisualizeRenderResult } from "./types.js";
 
 /**
  * Rasterizes SVG markup to a PNG and returns the result as a base64 string.
@@ -11,7 +8,7 @@ export type RenderResult =
  * @returns On success: `{ ok: true, imageBase64, widthPx, heightPx }`.
  *          On failure: `{ ok: false, error }` — never throws.
  */
-export async function renderSvgToPng(svg: string): Promise<RenderResult> {
+export async function renderSvgToPng(svg: string): Promise<VisualizeRenderResult> {
   if (!svg || !svg.includes("<svg")) {
     return { ok: false, error: "Input does not appear to be SVG markup" };
   }

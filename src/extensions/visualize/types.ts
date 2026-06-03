@@ -20,6 +20,15 @@ export interface VisualizeToolInput {
   title?: string;
 }
 
+/**
+ * Result of any render or image-load operation.
+ * On success, carries the PNG payload as base64 and the rasterised dimensions.
+ * On failure, carries a human-readable explanation; the producing function never throws.
+ */
+export type VisualizeRenderResult =
+  | { ok: true; imageBase64: string; widthPx: number; heightPx: number }
+  | { ok: false; error: string };
+
 /** Details returned by the visualize tool after rendering. */
 export interface VisualizeToolDetails {
   kind: VisualizeKind;
