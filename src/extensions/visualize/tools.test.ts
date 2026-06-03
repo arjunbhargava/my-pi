@@ -1,5 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import sharp from "sharp";
 import { registerVisualize } from "./tools.js";
 
 const VALID_SVG =
@@ -47,6 +48,19 @@ describe("registerVisualize", () => {
     assert.ok("title" in parameters.properties, "parameters.title missing");
   });
 
+  it("kind schema enum contains both 'svg' and 'image'", () => {
+    const pi = makeFakePi();
+    registerVisualize(pi);
+    const kindSchema = pi.tools["visualize"].parameters.properties.kind as {
+      type: string;
+      enum: string[];
+    };
+    assert.equal(kindSchema.type, "string");
+    assert.ok(Array.isArray(kindSchema.enum), "kind.enum should be an array");
+    assert.ok(kindSchema.enum.includes("svg"), "enum should include 'svg'");
+    assert.ok(kindSchema.enum.includes("image"), "enum should include 'image'");
+  });
+
   it("execute returns imageBase64 and dimension fields for valid SVG", async () => {
     const pi = makeFakePi();
     registerVisualize(pi);
@@ -73,5 +87,33 @@ describe("registerVisualize", () => {
       typeof result.details.error === "string" && result.details.error.length > 0,
       "details.error should be a non-empty string",
     );
+  });
+
+  it("execute kind:image returns imageBase64 and dimensions for a valid PNG data-URI", async () => {
+    const pi = makeFakePi();
+    registerVisualize(pi);
+    const tool = pi.tools["visualize"];
+
+    // Generate a small PNG with sharp at test time.
+    const pngBuffer = await sharp({
+      create: { width: 10, height: 10, channels: 3, background: { r: 255, g: 0, b: 0 } },
+    })
+      .png()
+      .toBuffer();
+    const dataUri = `data:image/png;base64,${pngBuffer.toString("base64")}`;
+
+    const result = await tool.execute("id", { kind: "image", content: dataUri, title: "Test image" });
+    assert.ok(!result.isError, `execute should not return isError; got: ${result.details?.error}`);
+    const details = result.details as {
+      imageBase64?: string;
+      widthPx?: number;
+      heightPx?: number;
+    };
+    assert.ok(
+      typeof details.imageBase64 === "string" && details.imageBase64.length > 0,
+      "imageBase64 should be a non-empty string",
+    );
+    assert.equal(typeof details.widthPx, "number");
+    assert.equal(typeof details.heightPx, "number");
   });
 });

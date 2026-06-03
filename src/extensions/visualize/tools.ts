@@ -18,6 +18,7 @@ function StringEnum<T extends readonly string[]>(values: T): ReturnType<typeof T
 }
 
 import { renderSvgToPng } from "./render.js";
+import { loadImageToPng } from "./image.js";
 import type { VisualizeToolDetails, VisualizeToolInput } from "./types.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- pi's ExtensionAPI; imported only in the entry point
@@ -41,25 +42,30 @@ export function registerVisualize(pi: PiAPI): void {
     name: "visualize",
     label: "Visualize",
     description:
-      "Render an SVG visualization inline in the TUI as a PNG image. " +
-      "The `content` field must be complete, valid SVG markup with explicit " +
-      "width and height attributes. HTML is not yet supported.",
-    promptSnippet: "Render an SVG visualization (charts, diagrams) inline in the TUI",
+      "Render an SVG or raster image inline in the TUI as a PNG. " +
+      "`kind` may be \"svg\" (content is complete SVG markup with explicit width and height attributes) " +
+      "or \"image\" (content is an image source: a filesystem path, a raw base64 string, " +
+      "a data:image/... data-URI, or an http(s) URL).",
+    promptSnippet: "Render an SVG visualization or raster image inline in the TUI",
     promptGuidelines: [
       "Use visualize when the user asks for a chart, diagram, or visual that is better " +
-        "shown as an image than as ASCII art. Provide complete, valid SVG markup with " +
-        "explicit width and height attributes.",
+        "shown as an image than as ASCII art.",
+      "Use kind \"svg\" for vector markup — provide complete, valid SVG with explicit width and height attributes.",
+      "Use kind \"image\" to display an existing or model-produced raster image — set content to a " +
+        "filesystem path, a raw base64 string, a data:image/... data-URI, or an http(s) URL.",
     ],
     parameters: Type.Object({
       // Cast required: StringEnum returns TUnsafe; Type.Object expects TSchema from the same typebox version
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      kind: StringEnum(["svg"] as const) as any,
-      content: Type.String({ description: "Complete SVG markup to render." }),
+      kind: StringEnum(["svg", "image"] as const) as any,
+      content: Type.String({ description: "SVG markup, or an image source (path, base64, data-URI, or URL)." }),
       title: Type.Optional(Type.String({ description: "Optional human-readable label for the visualization." })),
     }),
 
     async execute(_toolCallId: string, params: VisualizeToolInput) {
-      const result = await renderSvgToPng(params.content);
+      const result = params.kind === "image"
+        ? await loadImageToPng(params.content)
+        : await renderSvgToPng(params.content);
       if (!result.ok) {
         return {
           content: [{ type: "text", text: result.error }],

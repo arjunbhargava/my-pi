@@ -3,8 +3,13 @@
  * No logic — only type declarations.
  */
 
-/** The rendering format for a visualization. Currently only SVG is supported. */
-export type VisualizeKind = "svg";
+/**
+ * The rendering format for a visualization.
+ * - "svg": content is complete SVG markup rendered via sharp.
+ * - "image": content is an image source — filesystem path, raw base64 string,
+ *   data:image/... data-URI, or an http(s) URL — loaded via sharp.
+ */
+export type VisualizeKind = "svg" | "image";
 
 /** Parameters passed by the agent when invoking the visualize tool. */
 export interface VisualizeToolInput {
