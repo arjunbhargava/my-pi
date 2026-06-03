@@ -8,7 +8,8 @@
       "./src/extensions/agents/agents.ts",
       "./src/extensions/websearch/websearch.ts",
       "./src/extensions/lsp/lsp.ts",
-      "./src/extensions/pdf/pdf.ts"
+      "./src/extensions/pdf/pdf.ts",
+      "./src/extensions/visualize/visualize.ts"
     ],
     "skills": [
       "./skills"
