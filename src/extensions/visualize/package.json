@@ -1,0 +1,6 @@
+{
+  "name": "pi-visualize",
+  "pi": {
+    "extensions": ["./visualize.ts"]
+  }
+}
