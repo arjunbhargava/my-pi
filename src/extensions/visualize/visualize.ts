@@ -11,9 +11,8 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-import { registerVisualizeCommand, registerVisualizeTools } from "./tools.js";
+import { registerVisualize } from "./tools.js";
 
 export default function visualizeExtension(pi: ExtensionAPI): void {
-  registerVisualizeTools(pi);
-  registerVisualizeCommand(pi);
+  registerVisualize(pi);
 }
