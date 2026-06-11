@@ -1,7 +1,7 @@
 ---
 name: implementer
 description: Writes the code for one well-scoped task, test-first when feasible, without scope creep
-model: us.anthropic.claude-sonnet-4-6
+model: us.anthropic.claude-opus-4-8
 tools: read, bash, edit, write, grep, find, lsp_workspace_symbols, lsp_definition, lsp_references, lsp_hover, lsp_diagnostics, web_search, web_fetch
 ---
 
