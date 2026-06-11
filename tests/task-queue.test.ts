@@ -19,6 +19,7 @@ import {
   createQueue,
   dispatchTask,
   getNextQueuedTask,
+  getDispatchableTasks,
   getQueueSummary,
   getTasksByStatus,
   readQueue,
@@ -357,6 +358,41 @@ test("dispatchTask with no dependsOn always succeeds", async () => {
 
   const result = dispatchTask(q, task.id, "worker-1", "orch");
   assert.ok(result.ok);
+});
+
+// ---------------------------------------------------------------------------
+// getDispatchableTasks tests
+// ---------------------------------------------------------------------------
+
+test("getDispatchableTasks returns queued tasks without dependencies", async () => {
+  const q = createQueue("t", "g", "main", "pi-team-test");
+  const taskA = addTask(q, "A", "desc", "orch");
+  const taskB = addTask(q, "B", "desc", "orch");
+  dispatchTask(q, taskA.id, "worker-1", "orch");
+
+  const dispatchable = getDispatchableTasks(q);
+  assert.deepEqual(dispatchable.map((t) => t.id), [taskB.id]);
+});
+
+test("getDispatchableTasks excludes tasks with unmet dependencies", async () => {
+  const q = createQueue("t", "g", "main", "pi-team-test");
+  const taskA = addTask(q, "A", "desc", "orch");
+  const taskB = addTask(q, "B", "depends on A", "orch", { dependsOn: [taskA.id] });
+
+  const dispatchable = getDispatchableTasks(q);
+  assert.deepEqual(dispatchable.map((t) => t.id), [taskA.id]);
+
+  // Close A through the full lifecycle — B becomes dispatchable.
+  dispatchTask(q, taskA.id, "worker-1", "orch");
+  completeTask(q, taskA.id, "Done", "worker-1");
+  closeTask(q, taskA.id, "evaluator");
+
+  assert.deepEqual(getDispatchableTasks(q).map((t) => t.id), [taskB.id]);
+});
+
+test("getDispatchableTasks returns empty for a drained queue", async () => {
+  const q = createQueue("t", "g", "main", "pi-team-test");
+  assert.deepEqual(getDispatchableTasks(q), []);
 });
 
 // ---------------------------------------------------------------------------

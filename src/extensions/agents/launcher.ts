@@ -67,8 +67,15 @@ function slugifyGoal(goal: string): string {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
-    .slice(0, 32);
+    .slice(0, SESSION_SLUG_MAX);
 }
+
+/**
+ * Max characters of the goal slug in a tmux session name. The teamId
+ * provides uniqueness; the slug is only for human recognition, so it
+ * can be short.
+ */
+const SESSION_SLUG_MAX = 24;
 
 /** Shell-safe single-quoted string. */
 function sq(value: string): string {
@@ -231,7 +238,11 @@ export async function launchTeam(
 ): Promise<Result<TeamSession>> {
   const teamId = generateTeamId();
   const slug = slugifyGoal(goal);
-  const tmuxSession = `${TEAM_TMUX_PREFIX}${slug}`;
+  // teamId first: it guarantees uniqueness (two teams with similar
+  // goals no longer collide) and visually pairs the session with the
+  // queue file, worktree dir, and config files, which are all keyed
+  // by teamId. The slug after it is for human recognition.
+  const tmuxSession = `${TEAM_TMUX_PREFIX}${teamId}-${slug}`;
   const queuePath = path.join(baseDir, `${QUEUE_FILENAME_PREFIX}${teamId}.json`);
 
   const exists = await sessionExists(ctx, tmuxSession);

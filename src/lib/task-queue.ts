@@ -366,6 +366,19 @@ export function getNextQueuedTask(queue: TaskQueue): Task | null {
   return queue.tasks.find((t) => t.status === "queued") ?? null;
 }
 
+/**
+ * Get queued tasks whose dependencies are all satisfied — every ID in
+ * `dependsOn` (if any) is closed. These are the tasks an orchestrator
+ * can dispatch right now. Mirrors the dependency check that
+ * {@link dispatchTask} enforces under the lock.
+ */
+export function getDispatchableTasks(queue: TaskQueue): Task[] {
+  const closedIds = new Set(queue.closed.map((c) => c.id));
+  return queue.tasks.filter(
+    (t) => t.status === "queued" && (t.dependsOn ?? []).every((dep) => closedIds.has(dep)),
+  );
+}
+
 /** Get a task by ID. */
 export function getTaskById(queue: TaskQueue, taskId: string): Task | null {
   return queue.tasks.find((t) => t.id === taskId) ?? null;

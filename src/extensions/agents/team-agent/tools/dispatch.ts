@@ -12,6 +12,8 @@ import { Type } from "@sinclair/typebox";
 
 import {
   dispatchTask,
+  generateTaskId,
+  getDispatchableTasks,
   getQueueSummary,
   getTasksByStatus,
   recoverTask,
@@ -39,6 +41,15 @@ const MONITOR_CYCLE_MS = 30 * 60 * 1000;
  * safety net. Cheap: one `tmux list-windows` call + stat() per worker.
  */
 const MONITOR_HEARTBEAT_MS = 10_000;
+
+/**
+ * How long monitor_tasks waits for new work when it finds the queue
+ * fully drained. Returning "drained" instantly would race against an
+ * evaluator that is mid-turn and about to file follow-up tasks via
+ * add_task; a bounded grace window absorbs that gap without ever
+ * hanging the orchestrator indefinitely.
+ */
+const DRAIN_GRACE_MS = 20_000;
 
 /**
  * How long a worker can go without a tool call before being considered
@@ -80,7 +91,12 @@ export function registerDispatchTools(pi: ExtensionAPI, runtime: TeamAgentRuntim
     name: "monitor_tasks",
     label: "Monitor Tasks",
     description:
-      "Wait for task queue changes. Also checks worker health each cycle — if a worker's tmux window has died, its task is automatically recovered and requeued. Retries internally on timeout — only returns when there is a meaningful change or the session ends.",
+      "Wait for task queue changes. Returns immediately if queued tasks are already ready to dispatch "
+      + "(all dependencies closed) — dispatch them. If the queue is fully drained, waits a short grace "
+      + "period for evaluator follow-ups and then confirms the drain — that confirmation is the signal "
+      + "to finish the session. Also checks worker health each cycle: if a worker's tmux window has died, "
+      + "its task is automatically recovered and requeued. Retries internally on timeout — only returns "
+      + "when there is something to act on.",
     parameters: Type.Object({}),
     async execute(_id, _params, signal) {
       return await handleMonitor(runtime, signal);
@@ -117,7 +133,7 @@ async function handleDispatch(
   const workerType = workerTypeArg ?? DEFAULT_WORKER_TYPE;
   const workerDef = await findWorkerDefinition(config.agentsDirs, workerType);
 
-  const workerName = `worker-${Date.now().toString(36)}`;
+  const workerName = `worker-${generateTaskId()}`;
   const baseDir = path.dirname(runtime.queuePath);
   const workerBranch = `team/${config.teamId}/${workerName}`;
   const workerWorktreePath = path.join(baseDir, `team-${config.teamId}`, workerName);
@@ -212,9 +228,21 @@ async function handleMonitor(
   runtime: TeamAgentRuntime,
   signal: AbortSignal | undefined,
 ) {
-  // Baseline the current state before entering the wait so we only
-  // report on actual changes that happen DURING the call.
+  // Level-triggered entry checks: queue states that ALREADY require
+  // orchestrator action are reported immediately, even if they arose
+  // before this call. This closes the blind window between monitor
+  // calls — e.g. evaluator follow-ups filed via add_task while the
+  // model was digesting the previous monitor result would otherwise
+  // be absorbed into the baseline and never reported.
   const initial = await runtime.loadQueue();
+
+  if (getDispatchableTasks(initial).length > 0) {
+    return textResult(buildChangeMessage(initial));
+  }
+  if (initial.tasks.length === 0) {
+    return await confirmDrained(runtime, signal);
+  }
+
   let lastSignature = signQueue(initial);
   let finalMessage: string | null = null;
 
@@ -235,40 +263,82 @@ async function handleMonitor(
           if (recovered > 0) {
             const fresh = await runtime.loadQueue();
             finalMessage =
-              `Recovered ${recovered} task(s) from dead workers.\n\n${getQueueSummary(fresh)}`;
+              `Recovered ${recovered} task(s) from dead workers.\n\n${buildChangeMessage(fresh)}`;
             return "done";
           }
         }
 
-        // Next: diff task identities + statuses. A (complete, dispatch)
-        // pair that keeps counts stable still registers as a change.
+        // Next: diff task identities + statuses against the entry
+        // baseline. A (complete, dispatch) pair that keeps counts
+        // stable still registers as a change.
         const signature = signQueue(queue);
         if (signature !== lastSignature) {
-          finalMessage = getQueueSummary(queue);
+          finalMessage = buildChangeMessage(queue);
           return "done";
         }
-        lastSignature = signature;
         return "continue";
       },
       { signal, timeoutMs: MONITOR_CYCLE_MS, heartbeatMs: MONITOR_HEARTBEAT_MS },
     );
 
     if (outcome === "done" && finalMessage !== null) {
-      return { content: [{ type: "text" as const, text: finalMessage }], details: {} };
+      return textResult(finalMessage);
     }
     if (outcome === "aborted") {
-      return {
-        content: [{ type: "text" as const, text: "Monitor aborted." }],
-        details: {},
-      };
+      return textResult("Monitor aborted.");
     }
     // outcome === "timeout" → loop silently
   }
 
-  return {
-    content: [{ type: "text" as const, text: "Monitor aborted." }],
-    details: {},
-  };
+  return textResult("Monitor aborted.");
+}
+
+/**
+ * The queue was fully drained at monitor entry. Wait a bounded grace
+ * period for new work (the evaluator may be mid-turn, about to file
+ * follow-ups), then either report the new state or confirm the drain
+ * so the orchestrator can finish the session.
+ */
+async function confirmDrained(
+  runtime: TeamAgentRuntime,
+  signal: AbortSignal | undefined,
+) {
+  let message: string | null = null;
+
+  const outcome = await watchQueueUntil(
+    runtime.queuePath,
+    async (queue) => {
+      if (queue.tasks.length === 0) return "continue";
+      message = buildChangeMessage(queue);
+      return "done";
+    },
+    { signal, timeoutMs: DRAIN_GRACE_MS },
+  );
+
+  if (outcome === "done" && message !== null) return textResult(message);
+  if (outcome === "aborted") return textResult("Monitor aborted.");
+  return textResult(
+    `Queue is fully drained — no queued, active, or review tasks, and no new tasks appeared `
+    + `within the ${DRAIN_GRACE_MS / 1000}s grace window. Safe to finish the session.`,
+  );
+}
+
+/**
+ * Queue summary plus an explicit action callout when queued tasks are
+ * ready to dispatch. The callout makes actionable state unmissable —
+ * the model should never have to infer dispatchability from counts.
+ */
+function buildChangeMessage(queue: TaskQueue): string {
+  const summary = getQueueSummary(queue);
+  const dispatchable = getDispatchableTasks(queue);
+  if (dispatchable.length === 0) return summary;
+  const list = dispatchable.map((t) => `  ${t.id} — ${t.title}`).join("\n");
+  return `${summary}\n\nAction required: ${dispatchable.length} queued task(s) ready to dispatch:\n${list}`;
+}
+
+/** Standard text-only tool result. */
+function textResult(text: string) {
+  return { content: [{ type: "text" as const, text }], details: {} };
 }
 
 /**

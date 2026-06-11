@@ -70,7 +70,10 @@ export async function watchQueueUntil(
   let watcher: FSWatcher;
   try {
     watcher = watch(dir, { persistent: false }, (_event, name) => {
-      if (name === filename) wake();
+      // Some platforms (notably macOS) deliver events with a null
+      // filename. Treat those as potential queue writes — a spurious
+      // wake just re-runs the handler, which is cheap.
+      if (name === null || name === filename) wake();
     });
   } catch {
     // Can't watch — fail open by treating every cycle as a heartbeat.
