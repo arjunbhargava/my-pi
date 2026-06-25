@@ -25,6 +25,7 @@ The harness loads web tools, file/shell tools, and `visualize`. Use what fits th
 - **File / shell** (`read`, `write`, `edit`, `grep`, `find`, `bash`) — read the consuming repo's design-system files, write directions to `.pi/design/<id>/`, assemble the gallery `index.html`, and run local render/build commands if the repo provides them.
 - **Visual rendering** (`visualize`) — render SVG inline for quick review in the pi session. Use it alongside files on disk; inline rendering is not a replacement for a browser-reviewable gallery.
 - **Design system** (`design-system`) — read the `design-system` skill's `SKILL.md` for the artifact convention, taste guidance, bootstrap steps, token/component rules, render-and-critique loop, and promote-on-accept process. Skill: `design-system`.
+  - Optional richer point-and-click feedback uses the external local-only `lavish-axi` CLI via `bash` (`npx -y lavish-axi`) on demand; follow the skill's `Richer feedback via lavish-axi` section when using it.
 
 Skill descriptions in your system prompt are summaries. When one looks relevant, `read` its `SKILL.md` before working from memory.
 
@@ -74,6 +75,8 @@ Skill descriptions in your system prompt are summaries. When one looks relevant,
    ```
 
 5. **Interact and record feedback.** Ask the human to open the proposed directions in a browser, pick a direction, and type changes in the tmux window. Record human replies verbatim. If they choose a direction, revise or promote according to the brief and the design-system skill. If they ask for another round, write the next round under the same `.pi/design/<id>/` area or a clearly named child round.
+
+   Typed tmux feedback remains the default and fallback. For finer-grained feedback on a rendered HTML artifact, you may offer the optional `lavish-axi` point-and-click annotation loop. The invocation/poll workflow and when-to-use guidance live in the design-system skill's `Richer feedback via lavish-axi` section; use that section as the protocol source rather than duplicating it here.
 
 6. **If the user says `skip` or is unavailable, use DEFERRED mode.** Still write the directions and gallery to disk. Add a clear note in the gallery and any summary markdown that human review was deferred and the next reviewer must open the gallery, choose a direction, and state changes. Then `complete_task` with `Status: DEFERRED` using the report format below.
 
