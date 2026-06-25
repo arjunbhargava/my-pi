@@ -17,15 +17,15 @@
  *       export PATH="/home/arjunbhargava/.nvm/versions/node/v22.22.2/bin:$PATH"
  *   - Network access for the FIRST `npx -y lavish-axi` fetch (cached after).
  *   - For the HUMAN round-trip step only (opt-in, see below): a local browser
- *     + display so a human can open the printed URL and annotate the artifact.
+ *     the human can use to open the printed URL and annotate the artifact.
  *
  * Command (headless automated assertions only — no human needed):
  *     npx tsx tests/e2e/lavish-axi-loop.ts
  *
  * Command (headless assertions + live human annotate -> poll round-trip):
  *     LAVISH_LIVE=1 npx tsx tests/e2e/lavish-axi-loop.ts
- *   In LAVISH_LIVE mode the script prints a session URL, opens it if a browser
- *   launcher is available, and waits (up to LAVISH_LIVE_TIMEOUT_MS, default
+ *   In LAVISH_LIVE mode the script prints a session URL without launching a
+ *   browser, and waits (up to LAVISH_LIVE_TIMEOUT_MS, default
  *   180000) for the human to click an element, type an annotation, and press
  *   "Send to Agent". It then asserts the returned prompts[] payload.
  *
@@ -47,7 +47,16 @@
 
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  readlinkSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { createServer, Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -84,6 +93,13 @@ function skip(label: string) {
 }
 
 const NON_NUMERIC_FAILURE_EXIT_CODE = 124;
+const TCP_LISTEN_STATE = "0A";
+const PROC_SOCKET_PREFIX = "socket:[";
+const PROC_SOCKET_SUFFIX = "]";
+const PROC_NET_LOCAL_ADDRESS_INDEX = 1;
+const PROC_NET_STATE_INDEX = 3;
+const PROC_NET_INODE_INDEX = 9;
+const DIRECT_KILL_FIXTURE_READY = "lavish-loop-listener-ready";
 
 interface CliResult {
   stdout: string;
@@ -101,6 +117,12 @@ interface CliResultInput {
   signal?: NodeJS.Signals | null;
   timedOut?: boolean;
   failedToSpawn?: boolean;
+}
+
+interface DirectKillResult {
+  pids: number[];
+  released: boolean;
+  detail: string;
 }
 
 function normalizeCliResult(input: CliResultInput): CliResult {
@@ -236,6 +258,118 @@ async function waitForPortRelease(port: number): Promise<boolean> {
   return false;
 }
 
+function listeningSocketInodesForPort(port: number): Set<string> {
+  const portHex = port.toString(16).toUpperCase().padStart(4, "0");
+  const inodes = new Set<string>();
+
+  for (const procNetPath of ["/proc/net/tcp", "/proc/net/tcp6"]) {
+    if (!existsSync(procNetPath)) continue;
+
+    let lines: string[];
+    try {
+      lines = readFileSync(procNetPath, "utf8").split("\n");
+    } catch {
+      continue;
+    }
+
+    for (const line of lines.slice(1)) {
+      const columns = line.trim().split(/\s+/);
+      const localAddress = columns[PROC_NET_LOCAL_ADDRESS_INDEX];
+      const state = columns[PROC_NET_STATE_INDEX];
+      const inode = columns[PROC_NET_INODE_INDEX];
+      const localPort = localAddress?.split(":").at(-1)?.toUpperCase();
+      if (state === TCP_LISTEN_STATE && localPort === portHex && inode) inodes.add(inode);
+    }
+  }
+
+  return inodes;
+}
+
+function findListeningPidsOnPort(port: number): number[] {
+  const socketTargets = new Set(
+    Array.from(listeningSocketInodesForPort(port), (inode) => `${PROC_SOCKET_PREFIX}${inode}${PROC_SOCKET_SUFFIX}`),
+  );
+  if (socketTargets.size === 0) return [];
+
+  let procEntries: ReturnType<typeof readdirSync>;
+  try {
+    procEntries = readdirSync("/proc", { withFileTypes: true });
+  } catch {
+    return [];
+  }
+
+  const pids = new Set<number>();
+  for (const procEntry of procEntries) {
+    if (!procEntry.isDirectory() || !/^\d+$/.test(procEntry.name)) continue;
+
+    let fdEntries: string[];
+    try {
+      fdEntries = readdirSync(`/proc/${procEntry.name}/fd`);
+    } catch {
+      continue;
+    }
+
+    for (const fdEntry of fdEntries) {
+      let target: string;
+      try {
+        target = readlinkSync(`/proc/${procEntry.name}/fd/${fdEntry}`);
+      } catch {
+        continue;
+      }
+      if (socketTargets.has(target)) {
+        pids.add(Number(procEntry.name));
+        break;
+      }
+    }
+  }
+
+  return Array.from(pids).sort((left, right) => left - right);
+}
+
+function signalPids(pids: number[], signal: NodeJS.Signals): string[] {
+  const errors: string[] = [];
+  for (const pid of pids) {
+    try {
+      process.kill(pid, signal);
+    } catch (err) {
+      errors.push(`${pid}/${signal}: ${(err as Error).message}`);
+    }
+  }
+  return errors;
+}
+
+function livePids(pids: number[]): number[] {
+  return pids.filter((pid) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+}
+
+async function terminateListenersOnPort(port: number): Promise<DirectKillResult> {
+  const pids = findListeningPidsOnPort(port);
+  if (pids.length === 0) {
+    const released = await waitForPortRelease(port);
+    return { pids, released, detail: released ? "no listening process found" : "listener had no discoverable pid" };
+  }
+
+  const errors = signalPids(pids, "SIGTERM");
+  let released = await waitForPortRelease(port);
+  if (!released) {
+    errors.push(...signalPids(livePids(pids), "SIGKILL"));
+    released = await waitForPortRelease(port);
+  }
+
+  const detailParts = [`pids=${pids.join(",")}`];
+  if (errors.length > 0) detailParts.push(`kill_errors=${errors.join("; ")}`);
+  if (!released) detailParts.push("port still listening");
+
+  return { pids, released, detail: detailParts.join("; ") };
+}
+
 function waitForChildClose(child: ChildProcess, timeoutMs: number): Promise<boolean> {
   if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true);
   return new Promise((resolve) => {
@@ -245,6 +379,74 @@ function waitForChildClose(child: ChildProcess, timeoutMs: number): Promise<bool
       resolve(true);
     });
   });
+}
+
+function waitForChildOutput(child: ChildProcess, expected: string, timeoutMs: number): Promise<boolean> {
+  if (!child.stdout) return Promise.resolve(false);
+
+  return new Promise((resolve) => {
+    let output = "";
+    let settled = false;
+    const finish = (matched: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.stdout?.off("data", onData);
+      child.off("close", onClose);
+      resolve(matched);
+    };
+    const onData = (data: Buffer) => {
+      output += data.toString("utf8");
+      if (output.includes(expected)) finish(true);
+    };
+    const onClose = () => finish(false);
+    const timer = setTimeout(() => finish(false), timeoutMs);
+
+    child.stdout.on("data", onData);
+    child.once("close", onClose);
+  });
+}
+
+async function assertDirectKillFallbackInvariant() {
+  const port = await getFreePort();
+  const fixtureScript = [
+    "const net = require('node:net');",
+    "const port = Number(process.argv[1]);",
+    "const server = net.createServer();",
+    `server.listen(port, '127.0.0.1', () => console.log('${DIRECT_KILL_FIXTURE_READY}'));`,
+    "process.on('SIGTERM', () => {});",
+    "setInterval(() => undefined, 1000);",
+  ].join("\n");
+  const child = spawn(process.execPath, ["-e", fixtureScript, String(port)], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let stderr = "";
+  child.stderr?.on("data", (data: Buffer) => {
+    stderr += data.toString("utf8");
+  });
+
+  try {
+    const ready = await waitForChildOutput(child, DIRECT_KILL_FIXTURE_READY, 5_000);
+    check("direct-kill fixture starts on an allocated port", ready, stderr.trim() || `pid=${child.pid}`);
+    if (!ready) return;
+
+    const listening = await isPortListening(port);
+    check(`direct-kill fixture is listening on port ${port}`, listening);
+
+    const result = await terminateListenersOnPort(port);
+    check(
+      "direct-kill fallback releases an allocated listener",
+      result.released && result.pids.includes(child.pid ?? -1),
+      result.detail,
+    );
+    const closed = await waitForChildClose(child, 5_000);
+    check("direct-kill fallback terminates the listener process", closed, `pid=${child.pid}`);
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill("SIGKILL");
+      await waitForChildClose(child, 1_000);
+    }
+  }
 }
 
 // --- Resources allocated by this run (for teardown) ---------------------------
@@ -293,6 +495,16 @@ async function runTeardown() {
   }
 
   if (lavishPort !== null) {
+    const releasedAfterCli = await waitForPortRelease(lavishPort);
+    if (!releasedAfterCli) {
+      note(`port ${lavishPort} still listening after CLI teardown; invoking direct-kill fallback`);
+      const killResult = await terminateListenersOnPort(lavishPort);
+      check(
+        `direct-kill fallback released isolated port ${lavishPort}`,
+        killResult.released,
+        killResult.detail,
+      );
+    }
     const released = await waitForPortRelease(lavishPort);
     check(`no listener remains on port ${lavishPort}`, released);
   }
@@ -326,6 +538,7 @@ async function main() {
     !hasStatus(signaledFailure, "ended"),
     cliResultDetail(signaledFailure),
   );
+  await assertDirectKillFallbackInvariant();
   const ver = await runCli(["--version"], 120_000);
   const version = ver.stdout.trim();
   check("lavish-axi --version returns a version", /^\d+\.\d+\.\d+/.test(version), version);
@@ -505,12 +718,13 @@ async function main() {
         "\"Send to Agent\", and confirm this step reports PASS.",
     );
   } else {
-    // Open with a real browser launch so the human has a window to annotate.
-    const liveOpen = await runCli([artifact], 60_000);
+    const liveOpen = await runCli([artifact, "--no-open"], 60_000);
     const liveUrl = parseSessionUrl(liveOpen.stdout) ?? url;
+    check("live open exits 0 without launching a browser", liveOpen.code === 0, cliResultDetail(liveOpen));
     console.log("\n  === ARTIFACT ===");
     console.log(`  session_url:  ${liveUrl}`);
     console.log(`  artifact:     ${artifact}`);
+    console.log("  browser:      not launched by this script; open session_url manually");
     console.log("  action:       open the URL, click the <h1>, type any note, press \"Send to Agent\"");
     console.log("  ================\n");
     note(`waiting up to ${LIVE_TIMEOUT_MS}ms for a real human annotation…`);
