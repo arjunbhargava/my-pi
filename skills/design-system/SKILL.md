@@ -118,6 +118,35 @@ For each round:
 
 The loop is not complete until the worker has looked at the rendered output or has explicitly reported why rendering was unavailable.
 
+## Richer feedback via lavish-axi
+
+Use tmux text feedback as the default review path: it is enough for a coarse option pick and typed change requests. Reach for `lavish-axi` only when the human needs to point at a specific element or select a text range on a rendered HTML artifact. If `npx`, network access for the first fetch, or a usable browser path is unavailable, fall back to the tmux-text handoff and record that rich annotation was unavailable.
+
+Use `docs/lavish-axi-cli.md` as the CLI source of truth. Keep skill-level instructions at workflow level; do not copy the full flag reference into design artifacts or reports.
+
+Recommended workflow:
+
+1. Render and self-critique the HTML artifact first. Do not ask the human to annotate an artifact with obvious layout defects. The requested `layout_warnings` field is not present in `lavish-axi` v0.1.31; if a later verified CLI emits layout warnings, fix any error-severity warnings before asking the human to review.
+2. Open or resume a local review session using the documented no-browser-launch form, substituting the artifact's canonical absolute path in actual use: `npx -y lavish-axi /tmp/lavish-probe/test.html --no-open`. Report the returned session URL and the artifact path to the human instead of relying on a browser launch side effect.
+3. Poll for feedback with the documented long-poll form, again using the artifact's canonical absolute path in actual use: `lavish-axi poll /tmp/lavish-probe/test.html`. Leave it running; it is expected to stay silent until feedback arrives or the session ends. If the harness kills the poll, re-run it because queued feedback is not lost.
+4. On feedback, apply the requested changes to the same artifact path and poll again with the documented `--agent-reply` workflow from `docs/lavish-axi-cli.md`. End the loop when the human accepts, requests tmux-only feedback, or ends the session.
+5. When the review is done, end the session with the documented command form, substituting the artifact's canonical absolute path in actual use: `npx -y lavish-axi end /tmp/lavish-probe/test.html`.
+
+Poll output is TOON, not JSON. A feedback response returns `session.status: feedback`, `dom_snapshot`, and `prompts[]` entries with `uid`, `prompt`, `selector`, `tag`, and `text`; text-range annotations may include a `target` object, but that was not exercised headlessly in the CLI probe. Other observed poll states are `waiting` for the optional test/debug timeout case and `ended` after session end. The requested `layout_warnings` output is explicitly unverified and not present in v0.1.31, so do not claim layout auditing occurred unless a future `docs/lavish-axi-cli.md` update verifies it.
+
+Operational caveats:
+
+- `lavish-axi` runs a local server and binds to loopback by default; treat it as local-only review infrastructure.
+- The package is fetched on demand through `npx -y lavish-axi`; first use requires network access and later use may hit the local npm cache.
+- Sessions are keyed by the canonical file path. Reusing the same absolute real path resumes the same session; symlinked or moved artifacts open different sessions.
+- Browser launch may not work from a worker tmux context. Use `--no-open`, print the returned URL and file path, and keep the existing browser-open fallback guidance from the designer worker: do not fail the design round only because `xdg-open`, `open`, or a browser command is unavailable.
+
+### Phase 1 evaluation verdict
+
+Provisional verdict: the annotation UX is worth keeping as an optional bolt-on for element-specific or text-range feedback because the observed surface is narrow (`open`/`poll`/`end`), local, and usable from shell commands. The verdict remains provisional because live browser annotation could not be exercised in the headless CLI probe.
+
+Recommendation: adopt `lavish-axi` as the richer-review path behind the default tmux-text workflow, and revisit the dependency after end-to-end live verification.
+
 ## Promote on accept
 
 When the human chooses an option:
