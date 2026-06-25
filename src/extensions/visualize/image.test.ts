@@ -50,8 +50,7 @@ after(async () => {
 describe("loadImageToPng", () => {
   it("loads a PNG from a filesystem path", async () => {
     const result = await loadImageToPng(FIXTURE_PATH);
-    assert.equal(result.ok, true);
-    if (!result.ok) throw new Error("unreachable");
+    if (!result.ok) assert.fail(result.error);
     assert.equal(result.widthPx, FIXTURE_WIDTH);
     assert.equal(result.heightPx, FIXTURE_HEIGHT);
     assert.ok(result.imageBase64.length > 0);
@@ -60,16 +59,14 @@ describe("loadImageToPng", () => {
   it("loads a PNG from a data-URI", async () => {
     const dataUri = `data:image/png;base64,${fixtureBase64}`;
     const result = await loadImageToPng(dataUri);
-    assert.equal(result.ok, true);
-    if (!result.ok) throw new Error("unreachable");
+    if (!result.ok) assert.fail(result.error);
     assert.equal(result.widthPx, FIXTURE_WIDTH);
     assert.equal(result.heightPx, FIXTURE_HEIGHT);
   });
 
   it("loads a PNG from raw base64", async () => {
     const result = await loadImageToPng(fixtureBase64);
-    assert.equal(result.ok, true);
-    if (!result.ok) throw new Error("unreachable");
+    if (!result.ok) assert.fail(result.error);
     assert.equal(result.widthPx, FIXTURE_WIDTH);
     assert.equal(result.heightPx, FIXTURE_HEIGHT);
   });
@@ -77,8 +74,7 @@ describe("loadImageToPng", () => {
   it("loads a JPEG from raw base64 even though it begins with a slash", async () => {
     assert.ok(jpegBase64.startsWith("/"), "precondition: JPEG base64 starts with /");
     const result = await loadImageToPng(jpegBase64);
-    assert.equal(result.ok, true);
-    if (!result.ok) throw new Error(`expected ok, got error: ${result.error}`);
+    if (!result.ok) assert.fail(`expected ok, got error: ${result.error}`);
     assert.equal(result.widthPx, FIXTURE_WIDTH);
     assert.equal(result.heightPx, FIXTURE_HEIGHT);
   });
@@ -108,8 +104,7 @@ describe("loadImageToPng", () => {
       };
 
       const result = await loadImageToPng("https://example.com/test.png");
-      assert.equal(result.ok, true);
-      if (!result.ok) throw new Error("unreachable");
+      if (!result.ok) assert.fail(result.error);
       assert.equal(result.widthPx, FIXTURE_WIDTH);
       assert.equal(result.heightPx, FIXTURE_HEIGHT);
     });
