@@ -63,14 +63,22 @@ When the current working repo has no `design-system/` directory:
 
 1. Create `design-system/`.
 2. Create `design-system/GUIDELINES.md` with the project's concrete taste, accessibility expectations, accepted patterns, and unresolved design decisions. Seed it from the current product context and the references above; do not add token values or component catalogs by default.
-3. Add `.pi/design/` to the repo's `.gitignore` if it is not already ignored.
+3. Use the Runtime artifact convention preflight before any `.pi/design/<id>/` write; that preflight owns the `.pi/design/` ignore invariant.
 4. Do not create `design-system/tokens/` or `design-system/components/` unless the human explicitly asks to graduate the repo to a real token/component system or those directories already exist. Graduation is a separate design-system task, not the default bootstrap.
 
 If `design-system/GUIDELINES.md` already exists, read it before generating directions. Its project-specific rules override the generic taste guidance in this skill.
 
 ## Runtime artifact convention
 
-Write exploratory design directions to a gitignored runtime directory in the consuming repo:
+Write exploratory design directions to a gitignored runtime directory in the consuming repo.
+
+Before writing any `.pi/design/<id>/` file or directory, run this preflight from the consuming repo root:
+
+1. Check whether `.pi/design/` is already ignored, for example with `git check-ignore .pi/design/` or by inspecting the repo-root `.gitignore`.
+2. If `.pi/design/` is not ignored, add the repo-root-relative entry `.pi/design/` to `.gitignore`.
+3. Only write directions after the ignore invariant holds.
+
+The runtime directory layout is:
 
 ```text
 .pi/design/<id>/

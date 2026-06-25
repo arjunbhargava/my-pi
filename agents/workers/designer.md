@@ -50,7 +50,12 @@ Skill descriptions in your system prompt are summaries. When one looks relevant,
 
    The tmux session name is in the `team-context` block you were handed on startup. Your worker name is in the initial prompt. Do not claim the user approved a direction unless they actually did.
 
-3. **Create the design directions.** Write N directions, default 3 unless the task specifies otherwise, to the gitignored `.pi/design/<id>/` area following the `design-system` skill's artifact convention. Include a gallery `index.html` at `.pi/design/<id>/index.html`. Each direction must include:
+3. **Create the design directions.** Before creating `.pi/design/<id>/`, run the ignore preflight from the consuming repo root:
+   - Verify `.pi/design/` is ignored, for example with `git check-ignore .pi/design/` or by inspecting the repo-root `.gitignore`.
+   - If it is not ignored, add the repo-root-relative entry `.pi/design/` to `.gitignore`.
+   - Only then write N directions, default 3 unless the task specifies otherwise, to the gitignored `.pi/design/<id>/` area following the `design-system` skill's artifact convention.
+
+   Include a gallery `index.html` at `.pi/design/<id>/index.html`. Each direction must include:
    - HTML/CSS or SVG that can be reviewed directly
    - a one-line rationale
    - the tokens, guidelines, or component conventions used
