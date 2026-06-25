@@ -46,10 +46,11 @@
  */
 
 import { execFile, spawn, type ChildProcess } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync, realpathSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { createServer, Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createHash } from "node:crypto";
 
 const PASS = "\x1b[32m✓\x1b[0m";
 const FAIL = "\x1b[31m✗\x1b[0m";
@@ -82,10 +83,64 @@ function skip(label: string) {
   skipped++;
 }
 
+const NON_NUMERIC_FAILURE_EXIT_CODE = 124;
+
 interface CliResult {
   stdout: string;
   stderr: string;
   code: number;
+  signal: NodeJS.Signals | null;
+  timedOut: boolean;
+  failedToSpawn: boolean;
+}
+
+interface CliResultInput {
+  stdout: string;
+  stderr: string;
+  code?: number | null;
+  signal?: NodeJS.Signals | null;
+  timedOut?: boolean;
+  failedToSpawn?: boolean;
+}
+
+function normalizeCliResult(input: CliResultInput): CliResult {
+  const signal = input.signal ?? null;
+  const timedOut = input.timedOut ?? false;
+  const failedToSpawn = input.failedToSpawn ?? false;
+  const code =
+    typeof input.code === "number"
+      ? input.code
+      : signal || timedOut || failedToSpawn
+        ? NON_NUMERIC_FAILURE_EXIT_CODE
+        : 0;
+
+  return {
+    stdout: input.stdout,
+    stderr: input.stderr,
+    code,
+    signal,
+    timedOut,
+    failedToSpawn,
+  };
+}
+
+function cliResultDetail(result: CliResult): string {
+  const parts = [`exit ${result.code}`];
+  if (result.signal) parts.push(`signal ${result.signal}`);
+  if (result.timedOut) parts.push("timed out");
+  if (result.failedToSpawn) parts.push("failed to spawn");
+  return parts.join(", ");
+}
+
+function hasStatus(result: CliResult, status: string): boolean {
+  return result.code === 0 && new RegExp(`status:\\s*${status}\\b`).test(result.stdout);
+}
+
+function lavishCliEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  if (lavishPort !== null) env.LAVISH_AXI_PORT = String(lavishPort);
+  if (lavishStateDir !== null) env.LAVISH_AXI_STATE_DIR = lavishStateDir;
+  return env;
 }
 
 /**
@@ -97,13 +152,27 @@ function runCli(args: string[], timeoutMs = 60_000): Promise<CliResult> {
     execFile(
       "npx",
       ["-y", "lavish-axi", ...args],
-      { timeout: timeoutMs, encoding: "utf8" },
+      { timeout: timeoutMs, encoding: "utf8", env: lavishCliEnv() },
       (err, stdout, stderr) => {
-        const code =
-          err && typeof (err as { code?: unknown }).code === "number"
-            ? (err as { code: number }).code
-            : 0;
-        resolve({ stdout: stdout ?? "", stderr: stderr ?? "", code });
+        const error = err as {
+          code?: unknown;
+          killed?: unknown;
+          signal?: NodeJS.Signals | null;
+        } | null;
+        const code = typeof error?.code === "number" ? error.code : null;
+        const signal = error?.signal ?? null;
+        const timedOut = Boolean(error?.killed);
+        const failedToSpawn = Boolean(error && code === null && !signal && !timedOut);
+        resolve(
+          normalizeCliResult({
+            stdout: stdout ?? "",
+            stderr: stderr ?? "",
+            code: err ? code : 0,
+            signal,
+            timedOut,
+            failedToSpawn,
+          }),
+        );
       },
     );
   });
@@ -124,43 +193,139 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function getFreePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        server.close();
+        reject(new Error("Could not allocate a loopback port for lavish-axi e2e"));
+        return;
+      }
+      server.close((err) => (err ? reject(err) : resolve(address.port)));
+    });
+  });
+}
+
+function isPortListening(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = new Socket();
+    let settled = false;
+    const finish = (isListening: boolean) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(isListening);
+    };
+
+    socket.setTimeout(1_000);
+    socket.once("connect", () => finish(true));
+    socket.once("timeout", () => finish(false));
+    socket.once("error", () => finish(false));
+    socket.connect(port, "127.0.0.1");
+  });
+}
+
+async function waitForPortRelease(port: number): Promise<boolean> {
+  for (let attempt = 0; attempt < 10; attempt++) {
+    if (!(await isPortListening(port))) return true;
+    await sleep(250);
+  }
+  return false;
+}
+
+function waitForChildClose(child: ChildProcess, timeoutMs: number): Promise<boolean> {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(false), timeoutMs);
+    child.once("close", () => {
+      clearTimeout(timer);
+      resolve(true);
+    });
+  });
+}
+
 // --- Resources allocated by this run (for teardown) ---------------------------
 let tmpDir: string | null = null;
+let lavishStateDir: string | null = null;
+let lavishPort: number | null = null;
 const openedFiles = new Set<string>();
 let pollChild: ChildProcess | null = null;
 
 async function runTeardown() {
   console.log("\n7. Teardown");
-  // Kill any still-running background poll child first.
-  if (pollChild && pollChild.exitCode === null && !pollChild.killed) {
-    pollChild.kill("SIGTERM");
-    note(`killed background poll child pid=${pollChild.pid}`);
+  if (pollChild && pollChild.exitCode === null && pollChild.signalCode === null) {
+    const child = pollChild;
+    child.kill("SIGTERM");
+    const closed = await waitForChildClose(child, 5_000);
+    check("background poll child terminated", closed, `pid=${child.pid}`);
   }
-  // End every session we opened (keyed by canonical path).
-  for (const file of openedFiles) {
+
+  const endSession = async (file: string) => {
     const end = await runCli(["end", file], 30_000);
-    const ended = /status:\s*ended/.test(end.stdout) || end.code === 0;
-    check(`session ended: ${file}`, ended, `exit ${end.code}`);
+    check(
+      `session ended: ${file}`,
+      hasStatus(end, "ended"),
+      `${cliResultDetail(end)}; stdout=${end.stdout.trim() || "(empty)"}`,
+    );
+  };
+  const openedFileList = Array.from(openedFiles);
+  const finalFile = openedFileList.at(-1);
+
+  // v0.1.31 auto-stops after the last session ends, before `stop` can report `status: stopped`.
+  for (const file of openedFileList.slice(0, -1)) {
+    await endSession(file);
   }
-  // Stop the background server.
-  const stop = await runCli(["stop"], 30_000);
-  check(
-    "server stopped",
-    /status:\s*stopped/.test(stop.stdout) || stop.code === 0,
-    `exit ${stop.code}`,
-  );
-  // Remove the temp fixture directory.
+
+  if (openedFileList.length > 0) {
+    const stop = await runCli(["stop"], 30_000);
+    check(
+      "server stopped",
+      hasStatus(stop, "stopped"),
+      `${cliResultDetail(stop)}; stdout=${stop.stdout.trim() || "(empty)"}`,
+    );
+  }
+
+  if (finalFile) {
+    await endSession(finalFile);
+  }
+
+  if (lavishPort !== null) {
+    const released = await waitForPortRelease(lavishPort);
+    check(`no listener remains on port ${lavishPort}`, released);
+  }
+
   if (tmpDir) {
-    rmSync(tmpDir, { recursive: true, force: true });
-    note(`removed temp fixture dir ${tmpDir}`);
+    const removedDir = tmpDir;
+    rmSync(removedDir, { recursive: true, force: true });
+    check(`temp fixture dir removed: ${removedDir}`, !existsSync(removedDir));
   }
 }
 
 async function main() {
   console.log(`lavish-axi feedback-loop e2e  (LIVE=${LIVE})\n`);
 
-  // === 0. CLI availability ===
-  console.log("0. CLI availability");
+  // === 0. CLI availability and helper invariants ===
+  console.log("0. CLI availability and helper invariants");
+  const signaledFailure = normalizeCliResult({
+    stdout: "",
+    stderr: "",
+    code: null,
+    signal: "SIGTERM",
+    timedOut: true,
+  });
+  check(
+    "signal-only CLI failure maps to a non-zero sentinel",
+    signaledFailure.code === NON_NUMERIC_FAILURE_EXIT_CODE,
+    cliResultDetail(signaledFailure),
+  );
+  check(
+    "teardown status checks reject timed-out commands",
+    !hasStatus(signaledFailure, "ended"),
+    cliResultDetail(signaledFailure),
+  );
   const ver = await runCli(["--version"], 120_000);
   const version = ver.stdout.trim();
   check("lavish-axi --version returns a version", /^\d+\.\d+\.\d+/.test(version), version);
@@ -169,6 +334,10 @@ async function main() {
   // === 1. Open a session keyed by canonical file path ===
   console.log("\n1. Session start, keyed by canonical file path");
   tmpDir = realpathSync(mkdtempSync(join(tmpdir(), "lavish-loop-")));
+  lavishStateDir = join(tmpDir, "state");
+  lavishPort = await getFreePort();
+  note(`isolated lavish-axi state dir: ${lavishStateDir}`);
+  note(`isolated lavish-axi port: ${lavishPort}`);
   const artifact = join(tmpDir, "direction.html");
   writeFileSync(
     artifact,
@@ -185,7 +354,7 @@ async function main() {
 
   const open = await runCli([artifact, "--no-open"], 60_000);
   openedFiles.add(artifact);
-  check("open exits 0", open.code === 0, `exit ${open.code}`);
+  check("open exits 0", open.code === 0, cliResultDetail(open));
   check("open reports status: opened", /status:\s*opened/.test(open.stdout));
   const url = parseSessionUrl(open.stdout);
   check("open returns a loopback session URL", !!url && url.startsWith("http://127.0.0.1:"), url ?? "no url");
@@ -206,7 +375,7 @@ async function main() {
   // === 2. Poll long-poll timeout shape ===
   console.log("\n2. Poll — timeout case (documented escape hatch)");
   const pollTimeout = await runCli(["poll", artifact, "--timeout-ms", "3000"], 30_000);
-  check("poll timeout exits 0", pollTimeout.code === 0, `exit ${pollTimeout.code}`);
+  check("poll timeout exits 0", pollTimeout.code === 0, cliResultDetail(pollTimeout));
   check("poll timeout reports status: waiting", /status:\s*waiting/.test(pollTimeout.stdout));
   check(
     "poll timeout next_step tells caller to re-run without --timeout-ms",
@@ -223,7 +392,7 @@ async function main() {
   // returns the documented feedback payload. This validates the poll-side output
   // contract (the same contract STEP 5 verifies through a real browser).
   console.log("\n3. Poll — feedback case (headless prompt injection)");
-  const port = url ? new URL(url).port : "4387";
+  const port = url ? new URL(url).port : String(lavishPort ?? 4387);
   const apiUrl = `http://127.0.0.1:${port}/api/${expectedKey}/prompts`;
   const injected = {
     uid: "e2e-inject-001",
@@ -236,15 +405,33 @@ async function main() {
   const pollOut = await new Promise<CliResult>((resolve) => {
     const child = spawn("npx", ["-y", "lavish-axi", "poll", artifact, "--timeout-ms", "15000"], {
       encoding: "utf8",
+      env: lavishCliEnv(),
     } as never);
     pollChild = child;
     let stdout = "";
     let stderr = "";
+    let settled = false;
+    const finish = (result: CliResult) => {
+      if (settled) return;
+      settled = true;
+      pollChild = null;
+      resolve(result);
+    };
     child.stdout?.on("data", (d) => (stdout += d));
     child.stderr?.on("data", (d) => (stderr += d));
-    child.on("close", (code) => {
-      pollChild = null;
-      resolve({ stdout, stderr, code: code ?? 0 });
+    child.on("error", () => {
+      finish(
+        normalizeCliResult({
+          stdout,
+          stderr,
+          code: null,
+          signal: null,
+          failedToSpawn: true,
+        }),
+      );
+    });
+    child.on("close", (code, signal) => {
+      finish(normalizeCliResult({ stdout, stderr, code, signal }));
     });
     // POST the prompt shortly after the poll attaches.
     setTimeout(async () => {
@@ -261,7 +448,7 @@ async function main() {
     }, 1500);
   });
 
-  check("poll returns after injected feedback (exit 0)", pollOut.code === 0, `exit ${pollOut.code}`);
+  check("poll returns after injected feedback (exit 0)", pollOut.code === 0, cliResultDetail(pollOut));
   check("poll reports status: feedback", /status:\s*feedback/.test(pollOut.stdout));
   check("poll output declares prompts[] block", /prompts\[\d+\]/.test(pollOut.stdout));
   check("poll payload carries the injected uid", pollOut.stdout.includes(injected.uid));
@@ -296,7 +483,7 @@ async function main() {
   );
   const openOverflow = await runCli([overflowArtifact, "--no-open"], 60_000);
   openedFiles.add(overflowArtifact);
-  check("overflow artifact opens (exit 0)", openOverflow.code === 0, `exit ${openOverflow.code}`);
+  check("overflow artifact opens (exit 0)", openOverflow.code === 0, cliResultDetail(openOverflow));
   const overflowPoll = await runCli(["poll", overflowArtifact, "--timeout-ms", "3000"], 30_000);
   check(
     "overflow poll emits no layout_warnings field (absent in v0.1.31)",
@@ -332,7 +519,7 @@ async function main() {
     const livePoll = await runCli(["poll", artifact, "--timeout-ms", String(LIVE_TIMEOUT_MS)], LIVE_TIMEOUT_MS + 30_000);
     const elapsed = Date.now() - liveStart;
     const gotFeedback = /status:\s*feedback/.test(livePoll.stdout);
-    check("live poll exits 0", livePoll.code === 0, `exit ${livePoll.code}`);
+    check("live poll exits 0", livePoll.code === 0, cliResultDetail(livePoll));
     check("live poll returned human feedback (status: feedback)", gotFeedback, `after ${elapsed}ms`);
     check("live feedback contains a prompts[] payload", /prompts\[\d+\]/.test(livePoll.stdout));
     check(
