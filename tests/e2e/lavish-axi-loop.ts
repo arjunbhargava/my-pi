@@ -45,7 +45,7 @@
  * ---------------------------------------------------------------------------
  */
 
-import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { execFile, execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   existsSync,
@@ -286,6 +286,11 @@ function listeningSocketInodesForPort(port: number): Set<string> {
 }
 
 function findListeningPidsOnPort(port: number): number[] {
+  if (process.platform === "linux" || existsSync("/proc")) return findListeningPidsViaProc(port);
+  return findListeningPidsViaLsof(port);
+}
+
+function findListeningPidsViaProc(port: number): number[] {
   const socketTargets = new Set(
     Array.from(listeningSocketInodesForPort(port), (inode) => `${PROC_SOCKET_PREFIX}${inode}${PROC_SOCKET_SUFFIX}`),
   );
@@ -321,6 +326,31 @@ function findListeningPidsOnPort(port: number): number[] {
         break;
       }
     }
+  }
+
+  return Array.from(pids).sort((left, right) => left - right);
+}
+
+function findListeningPidsViaLsof(port: number): number[] {
+  let stdout: string;
+  try {
+    stdout = execFileSync("lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-t"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch (error: unknown) {
+    const status =
+      typeof error === "object" && error !== null && "status" in error
+        ? (error as { status?: unknown }).status
+        : null;
+    if (status === 1) return [];
+    throw error;
+  }
+
+  const pids = new Set<number>();
+  for (const line of stdout.split("\n")) {
+    const pid = Number(line.trim());
+    if (Number.isInteger(pid) && pid > 0) pids.add(pid);
   }
 
   return Array.from(pids).sort((left, right) => left - right);
