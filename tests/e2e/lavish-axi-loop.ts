@@ -48,11 +48,12 @@
  *   - Headless only: ~20-40s (dominated by repeated `npx` process startup).
  *   - With LAVISH_LIVE=1: + however long the human takes to annotate.
  *
- * TODO(live-verify): As of the commit that introduced this file, the human
- * annotate -> poll round-trip (STEP 5) had NOT been live-verified in this
- * session. A future runner must run with LAVISH_LIVE=1, perform a real browser
- * annotation, and confirm STEP 5 reports PASS. The headless assertions
- * (STEPS 1-4) do not require a human and stand on their own.
+ * Live verification: STEP 5 has been verified end-to-end on macOS against
+ * lavish-axi v0.1.31 with a real browser annotation; the poll returned a
+ * prompts[] payload and all four STEP 5 checks passed. The remaining open
+ * live-verification path is the headless remote SSH local-forward workflow
+ * documented above. The headless assertions (STEPS 1-4) do not require a human
+ * and stand on their own.
  *
  * Teardown: every session this script opens is `end`-ed, the background server
  * is `stop`-ped, any spawned poll child process is killed, and the temp fixture
