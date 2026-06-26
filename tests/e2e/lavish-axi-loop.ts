@@ -29,6 +29,21 @@
  *   180000) for the human to click an element, type an annotation, and press
  *   "Send to Agent". It then asserts the returned prompts[] payload.
  *
+ * Headless remote live run (SSH local-forward):
+ *   1. On the headless remote, run
+ *      `LAVISH_LIVE=1 npx tsx tests/e2e/lavish-axi-loop.ts` and read the
+ *      printed `session_url` (`http://127.0.0.1:<port>/session/<key>`). The
+ *      port is the isolated ephemeral port allocated as LAVISH_AXI_PORT and
+ *      printed in STEP 1 as "isolated lavish-axi port".
+ *   2. From the laptop, open a local-forward to that exact port:
+ *      `ssh -N -L <port>:127.0.0.1:<port> <user>@<remote-host>`.
+ *   3. Open the printed `session_url` verbatim in the laptop browser; the
+ *      127.0.0.1:<port> address now resolves through the tunnel to the remote
+ *      server. Click the <h1>, annotate, and press "Send to Agent".
+ *   4. Complete the tunnel setup and annotation within LAVISH_LIVE_TIMEOUT_MS
+ *      (default 180000ms), or raise it, for example
+ *      `LAVISH_LIVE_TIMEOUT_MS=600000`.
+ *
  * Expected duration:
  *   - Headless only: ~20-40s (dominated by repeated `npx` process startup).
  *   - With LAVISH_LIVE=1: + however long the human takes to annotate.
