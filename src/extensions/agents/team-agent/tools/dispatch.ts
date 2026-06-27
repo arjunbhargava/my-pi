@@ -133,7 +133,11 @@ async function handleDispatch(
   const workerType = workerTypeArg ?? DEFAULT_WORKER_TYPE;
   const workerDef = await findWorkerDefinition(config.agentsDirs, workerType);
 
-  const workerName = `worker-${generateTaskId()}`;
+  // Embed the worker type in the name so it surfaces everywhere the
+  // worker is identified: the tmux window/bar, the branch, the worktree
+  // path, the queue's assignedTo, and the board. Keeps the `worker-`
+  // prefix that discovery.ts uses to tag rediscovered windows as workers.
+  const workerName = `worker-${workerType}-${generateTaskId()}`;
   const baseDir = path.dirname(runtime.queuePath);
   const workerBranch = `team/${config.teamId}/${workerName}`;
   const workerWorktreePath = path.join(baseDir, `team-${config.teamId}`, workerName);
@@ -184,7 +188,7 @@ async function handleDispatch(
   };
 
   const taskPrompt = [
-    `You are ${workerName}. Your assigned task ID is: ${taskId}.`,
+    `You are ${workerName} (worker type: ${workerType}). Your assigned task ID is: ${taskId}.`,
     "Use read_queue to get your task details, do the work, then complete_task when done.",
     "After completing, call wait_for_verdict to block until the evaluator reviews your work.",
     "If revised, fix the feedback and complete_task again. If closed, exit.",
