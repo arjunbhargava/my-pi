@@ -453,6 +453,25 @@ function waitForChildOutput(child: ChildProcess, expected: string, timeoutMs: nu
   });
 }
 
+async function assertFreePortNoListenerInvariant() {
+  const port = await getFreePort();
+  const listening = await isPortListening(port);
+  let pids: number[] = [];
+  let errorDetail = "";
+
+  try {
+    pids = findListeningPidsOnPort(port);
+  } catch (error: unknown) {
+    errorDetail = error instanceof Error ? error.message : String(error);
+  }
+
+  check(
+    "free port has no listening PIDs (lsof/proc empty path)",
+    !listening && pids.length === 0 && errorDetail === "",
+    errorDetail || (listening ? `port ${port} is listening` : `pids=${pids.join(",")}`),
+  );
+}
+
 async function assertDirectKillFallbackInvariant() {
   const port = await getFreePort();
   const fixtureScript = [
@@ -584,6 +603,7 @@ async function main() {
     !hasStatus(signaledFailure, "ended"),
     cliResultDetail(signaledFailure),
   );
+  await assertFreePortNoListenerInvariant();
   await assertDirectKillFallbackInvariant();
   const ver = await runCli(["--version"], 120_000);
   const version = ver.stdout.trim();
