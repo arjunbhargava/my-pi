@@ -22,13 +22,17 @@ const MIN_BASE64_LENGTH = 16;
  *      Bytes are fetched with the global `fetch`; non-2xx responses are
  *      returned as `{ ok: false }`.
  *   3. Filesystem path — anything else is tried with `fs.readFile` first, so a
- *      real file is never misread as a base64 payload. A non-ENOENT failure
- *      (permissions, EISDIR) is returned as `{ ok: false }`.
- *   4. Raw base64 — on ENOENT, a base64-shaped string (see `looksLikeBase64`)
- *      is decoded and passed to sharp. This covers JPEG payloads, which begin
- *      with "/9j/" and would otherwise look like an absolute path. A missing
- *      path that is not base64-shaped returns the original file error so
- *      genuine missing-path mistakes get a clear message.
+ *      real file is never misread as a base64 payload. A failure that is not
+ *      "path cannot name a file" (permissions, EISDIR) is returned as
+ *      `{ ok: false }`.
+ *   4. Raw base64 — when the path cannot name an existing file (ENOENT, or
+ *      ENAMETOOLONG because the string exceeds PATH_MAX), a base64-shaped
+ *      string (see `looksLikeBase64`) is decoded and passed to sharp. This
+ *      covers JPEG payloads, which begin with "/9j/" and would otherwise look
+ *      like an absolute path, and any image whose base64 is longer than the OS
+ *      path limit. A missing path that is not base64-shaped returns the
+ *      original file error so genuine missing-path mistakes get a clear
+ *      message.
  *
  * @param source - Image source: data-URI, http(s) URL, filesystem path, or
  *                 raw base64 string.
@@ -55,16 +59,19 @@ async function resolveToBuffer(source: string): Promise<BufferResult> {
   }
 
   // Check the filesystem first (before base64) to avoid misinterpreting a real
-  // filename as a base64 payload. A non-ENOENT failure (permissions, EISDIR)
-  // is reported as-is. On ENOENT, fall through to raw base64 if the string is
-  // base64-shaped — crucially this covers JPEG payloads, which begin with
-  // "/9j/" and would otherwise be misread as an absolute path. If the missing
-  // string is not base64-shaped, surface the original file error so genuine
-  // missing-path mistakes get a clear message instead of a decode failure.
+  // filename as a base64 payload. A failure that means "this can't name an
+  // existing file" (ENOENT, or ENAMETOOLONG for a string longer than PATH_MAX)
+  // falls through to raw base64 if the string is base64-shaped — crucially this
+  // covers JPEG payloads, which begin with "/9j/" and would otherwise be misread
+  // as an absolute path, and any image large enough that its base64 exceeds the
+  // OS path-length limit. Other failures (permissions, EISDIR) are reported
+  // as-is. If the unusable string is not base64-shaped, surface the original
+  // file error so genuine missing-path mistakes get a clear message instead of a
+  // decode failure.
   const fileResult = await tryReadFile(source);
 
   if (fileResult.ok) return { ok: true, value: fileResult.value };
-  if (!fileResult.notFound) return { ok: false, error: fileResult.error };
+  if (!fileResult.pathUnusable) return { ok: false, error: fileResult.error };
   if (looksLikeBase64(source)) return decodeRawBase64(source);
   if (source.startsWith("/") || source.startsWith(".")) {
     return { ok: false, error: fileResult.error };
@@ -108,23 +115,43 @@ async function fetchUrl(url: string): Promise<BufferResult> {
 
 type FileReadResult =
   | { ok: true; value: Buffer }
-  | { ok: false; error: string; notFound: boolean };
+  | { ok: false; error: string; pathUnusable: boolean };
+
+/**
+ * Errno codes that mean the source string cannot name an existing file, so the
+ * caller should fall through to interpreting it as a base64 payload:
+ *   - ENOENT:       no such file.
+ *   - ENAMETOOLONG: string is longer than PATH_MAX — every realistically sized
+ *                   raw base64 image lands here, never reaching ENOENT.
+ */
+const PATH_UNUSABLE_CODES = new Set(["ENOENT", "ENAMETOOLONG"]);
+
+/** Max chars of `source` to echo in an error so a base64 payload is not dumped. */
+const MAX_SOURCE_IN_ERROR = 64;
 
 async function tryReadFile(source: string): Promise<FileReadResult> {
   try {
     const buf = await readFile(source);
     return { ok: true, value: buf };
   } catch (err) {
-    const isNotFound =
-      err instanceof Error &&
-      (err as NodeJS.ErrnoException).code === "ENOENT";
-    const message = err instanceof Error ? err.message : String(err);
+    const code = err instanceof Error ? (err as NodeJS.ErrnoException).code : undefined;
+    const isPathUnusable = code !== undefined && PATH_UNUSABLE_CODES.has(code);
+    // Prefer the errno code over `err.message`: Node embeds the full path in the
+    // message, which for a base64-shaped source would dump the whole payload.
+    const detail = code ?? (err instanceof Error ? err.message : String(err));
     return {
       ok: false,
-      error: `Could not read file "${source}": ${message}`,
-      notFound: isNotFound,
+      error: `Could not read file "${truncateSource(source)}": ${detail}`,
+      pathUnusable: isPathUnusable,
     };
   }
+}
+
+/** Truncate an over-long source string for inclusion in user-facing errors. */
+function truncateSource(source: string): string {
+  return source.length > MAX_SOURCE_IN_ERROR
+    ? `${source.slice(0, MAX_SOURCE_IN_ERROR)}… (${source.length} chars)`
+    : source;
 }
 
 /**

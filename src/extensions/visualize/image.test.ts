@@ -12,6 +12,7 @@ const FIXTURE_PATH = join(tmpdir(), `image-test-fixture-${process.pid}.png`);
 
 let fixtureBase64: string;
 let jpegBase64: string;
+let largeBase64: string;
 
 before(async () => {
   const { data } = await sharp({
@@ -41,6 +42,19 @@ before(async () => {
     .jpeg()
     .toBuffer();
   jpegBase64 = jpeg.toString("base64");
+
+  // A raw base64 payload whose length exceeds PATH_MAX. Noise is used so the
+  // PNG does not compress below the limit. fs.readFile on a string this long
+  // throws ENAMETOOLONG (not ENOENT); the regression is that the loader must
+  // still fall through to base64 decoding rather than report a file error.
+  const noise = Buffer.alloc(FIXTURE_WIDTH * FIXTURE_HEIGHT * 3);
+  for (let i = 0; i < noise.length; i++) noise[i] = Math.floor(Math.random() * 256);
+  const largePng = await sharp(noise, {
+    raw: { width: FIXTURE_WIDTH, height: FIXTURE_HEIGHT, channels: 3 },
+  })
+    .png()
+    .toBuffer();
+  largeBase64 = largePng.toString("base64");
 });
 
 after(async () => {
@@ -74,6 +88,17 @@ describe("loadImageToPng", () => {
   it("loads a JPEG from raw base64 even though it begins with a slash", async () => {
     assert.ok(jpegBase64.startsWith("/"), "precondition: JPEG base64 starts with /");
     const result = await loadImageToPng(jpegBase64);
+    if (!result.ok) assert.fail(`expected ok, got error: ${result.error}`);
+    assert.equal(result.widthPx, FIXTURE_WIDTH);
+    assert.equal(result.heightPx, FIXTURE_HEIGHT);
+  });
+
+  it("loads raw base64 longer than PATH_MAX (ENAMETOOLONG path probe)", async () => {
+    assert.ok(
+      largeBase64.length > 4096,
+      `precondition: base64 must exceed PATH_MAX, got ${largeBase64.length}`,
+    );
+    const result = await loadImageToPng(largeBase64);
     if (!result.ok) assert.fail(`expected ok, got error: ${result.error}`);
     assert.equal(result.widthPx, FIXTURE_WIDTH);
     assert.equal(result.heightPx, FIXTURE_HEIGHT);
@@ -133,6 +158,21 @@ describe("loadImageToPng", () => {
       if (result.ok) throw new Error("unreachable");
       assert.ok(result.error.length > 0);
     });
+  });
+
+  it("does not echo an over-long source verbatim in error messages", async () => {
+    // An absolute path far longer than PATH_MAX that is not base64-shaped:
+    // ENAMETOOLONG, not base64-decodable, so it surfaces a file error — but the
+    // error must be truncated, not the full multi-KB string.
+    const longBogusPath = "/" + "a b".repeat(3000);
+    const result = await loadImageToPng(longBogusPath);
+    assert.equal(result.ok, false);
+    if (result.ok) throw new Error("unreachable");
+    assert.ok(
+      result.error.length < longBogusPath.length,
+      `error should be truncated, was ${result.error.length} chars`,
+    );
+    assert.ok(result.error.includes("chars)"), `expected length annotation, got: ${result.error}`);
   });
 
   it("returns ok:false for a non-image garbage string", async () => {
