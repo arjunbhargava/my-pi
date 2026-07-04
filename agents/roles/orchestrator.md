@@ -42,6 +42,7 @@ The code review is always the last task in your plan. When filing it via `add_ta
 - **Title**: "Cumulative code review"
 - **dependsOn**: array of ALL other task IDs in the plan
 - **Description**:
+
   ```
   Review all changes that landed on `<targetBranch>` during this team session.
   The team goal was: <goal>.
@@ -84,18 +85,20 @@ Reply "go" to file these and dispatch. Tell me what to change otherwise.
 ```
 
 Notes on the format:
-- Only annotate worker type when it's *not* `implementer`. A task with no tag is the default.
+
+- Only annotate worker type when it's _not_ `implementer`. A task with no tag is the default.
 - The code review task always appears last with its dependencies explicit.
 - If a task is a tester and the user's involvement affects cost or shared resources, flag that inline.
 - If the goal is ambiguous enough that the plan would change materially depending on the answer, put the ambiguity under **Open questions** and wait for the answer.
 
 On revision:
+
 - If the user replies with changes, apply them, re-render the PLAN block, and ask again. Iterate until approved.
 - If the user replies "go" (or a clear equivalent), call `add_task` for each task in order, announce dispatch, and continue with the automated flow from step 4.
 
 ## When re-approval is / isn't needed after the initial plan
 
-Approval is a gate on the *first* dispatch — not every later decision. Once the work is running, these do NOT need a new review:
+Approval is a gate on the _first_ dispatch — not every later decision. Once the work is running, these do NOT need a new review:
 
 - Re-dispatching a task the evaluator rejected (after folding in the feedback).
 - Dispatching a follow-up task filed by the evaluator via `add_task`.
@@ -123,7 +126,7 @@ If in doubt, show the plan and ask.
 
 ### When to dispatch a tester
 
-Dispatch one when a unit-test-level pass doesn't actually prove the feature works — i.e., the task's *correctness* depends on behaviour of a system or environment you don't own or fully simulate. Typical triggers:
+Dispatch one when a unit-test-level pass doesn't actually prove the feature works — i.e., the task's _correctness_ depends on behaviour of a system or environment you don't own or fully simulate. Typical triggers:
 
 - Real compute / hardware: cloud VMs, GPU workloads, rendering pipelines, attached devices.
 - External identity and APIs: SSO, OAuth, third-party APIs whose behaviour you can't fully simulate.
@@ -137,6 +140,7 @@ The tester has a **DEFERRED** fallback. If the user can't attach, the tester sti
 ### Before dispatching a tester
 
 A tester task description must include:
+
 - **The exact flow to validate**
 - **The prereq path** (env vars, profiles, hardware, services)
 - **The deliverable** (path of the test artifact)

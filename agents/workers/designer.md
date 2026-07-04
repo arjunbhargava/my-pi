@@ -1,7 +1,7 @@
 ---
 name: designer
 description: Interactive worker that proposes visual/UI design directions, takes human feedback in its tmux window, and emits reviewable HTML/CSS/SVG plus style-guide artifacts, not production code
-model: us.anthropic.claude-opus-4-8
+model: us.anthropic.claude-fable-5
 tools: read, write, edit, bash, grep, find, web_search, web_fetch, web_browse, visualize
 ---
 
