@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>browser_check fixture</title>
+    <style>
+      :root { color-scheme: light; }
+      body {
+        margin: 0;
+        font-family: -apple-system, system-ui, sans-serif;
+        background: #f4f6fb;
+        color: #1a1f36;
+      }
+      header {
+        padding: 24px;
+        background: #2b59ff;
+        color: #fff;
+      }
+      main { padding: 24px; }
+      /* A crop target with distinct styling so a selector screenshot is
+         visually identifiable. */
+      #crop-target {
+        display: inline-block;
+        padding: 16px 24px;
+        border-radius: 12px;
+        background: #16a34a;
+        color: #fff;
+        font-weight: 600;
+      }
+      /* Responsive signal: the layout changes between 390px and 1440px so a
+         dual-viewport capture shows a visible difference. */
+      .cols { display: flex; gap: 16px; margin-top: 24px; }
+      .card {
+        flex: 1;
+        padding: 16px;
+        background: #fff;
+        border: 1px solid #d8dee9;
+        border-radius: 8px;
+      }
+      @media (max-width: 600px) {
+        .cols { flex-direction: column; }
+        header { background: #b91c1c; }
+      }
+    </style>
+  </head>
+  <body>
+    <header><h1 id="title">browser_check fixture page</h1></header>
+    <main>
+      <p>This page deliberately emits every signal class the tool should capture.</p>
+      <div id="crop-target">Selector crop target</div>
+      <div class="cols">
+        <div class="card">Column A</div>
+        <div class="card">Column B</div>
+        <div class="card">Column C</div>
+      </div>
+    </main>
+
+    <script>
+      // (b) one console.error and one console.warn on load.
+      console.error("FIXTURE_CONSOLE_ERROR: deliberate error for browser_check");
+      console.warn("FIXTURE_CONSOLE_WARN: deliberate warning for browser_check");
+
+      // (c) one failed network request: fetch a path the static server has
+      // no file for, producing an HTTP 404 (captured via the response event).
+      fetch("/__fixture_missing_resource__.json").catch(() => {
+        // Swallow the rejection so it does not itself become an uncaught
+        // exception; the failed request is captured by the response listener.
+      });
+
+      // (d) exactly one uncaught exception, thrown asynchronously so it is not
+      // caught by any surrounding try/catch and reaches the pageerror event.
+      setTimeout(() => {
+        throw new Error("FIXTURE_UNCAUGHT_EXCEPTION: deliberate throw for browser_check");
+      }, 0);
+    </script>
+  </body>
+</html>
