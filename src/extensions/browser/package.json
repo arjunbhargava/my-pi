@@ -1,0 +1,6 @@
+{
+  "name": "pi-browser",
+  "pi": {
+    "extensions": ["./browser.ts"]
+  }
+}
