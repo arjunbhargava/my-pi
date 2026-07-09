@@ -9,6 +9,7 @@
 import { chromium, type Browser, type BrowserContext, type LaunchOptions, type Page } from "playwright-core";
 
 import type { Result } from "../../lib/types.js";
+import { DESKTOP_VIEWPORT } from "./capture.js";
 
 const NAVIGATION_TIMEOUT_MS = 30_000;
 const NETWORK_IDLE_TIMEOUT_MS = 10_000;
@@ -96,7 +97,14 @@ export class BrowserManager {
     }
 
     try {
-      this.context = await this.browser.newContext();
+      // deviceScaleFactor 1: retina (2x) screenshots quadruple the pixel count
+      // for no gain — vision encoders downsample anyway. The default viewport
+      // matches the dual-viewport desktop size so responsive captures leave
+      // the page at its default dimensions (see capture.ts).
+      this.context = await this.browser.newContext({
+        deviceScaleFactor: 1,
+        viewport: { width: DESKTOP_VIEWPORT.width, height: DESKTOP_VIEWPORT.height },
+      });
       this.page = await this.context.newPage();
     } catch (err) {
       const cause = err instanceof Error ? err.message : String(err);
