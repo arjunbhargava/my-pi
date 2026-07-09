@@ -3,7 +3,7 @@
  *
  * Returns raw PNG base64 plus natural pixel dimensions. The actual downscale
  * to {@link MAX_IMAGE_WIDTH_PX} is NOT done here: AGENTS.md forbids importing
- * `@earendil-works/pi-coding-agent` outside the extension entry point, and
+ * the pi extension API package outside the extension entry point, and
  * pi's `resizeImage` helper lives in that package. This module instead marks
  * every over-wide image with `downscaleToWidthPx` so the tool wiring in the
  * entry point can perform the resize. No imports from the pi extension API
