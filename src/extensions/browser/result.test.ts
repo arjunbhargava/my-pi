@@ -8,7 +8,7 @@ import {
   summarizeSignalCounts,
   type CheckImage,
   type ResizeImageFn,
-} from "./tools.js";
+} from "./result.js";
 import type { PageSignals } from "./signals.js";
 import type { CapturedImage } from "./capture.js";
 
