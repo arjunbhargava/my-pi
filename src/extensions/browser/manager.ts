@@ -47,6 +47,14 @@ export function isMissingBrowserCause(cause: string): boolean {
 }
 
 /**
+ * Starts a browser process from launch options. Injectable so lifecycle
+ * tests can substitute a deferred fake instead of a real Chromium.
+ */
+export type BrowserLauncher = (options: LaunchOptions) => Promise<Browser>;
+
+const launchChromium: BrowserLauncher = (options) => chromium.launch(options);
+
+/**
  * Owns one headless Chromium browser and one page, launched lazily on first
  * use and reused across calls until `close()`.
  */
@@ -57,6 +65,14 @@ export class BrowserManager {
   // Concurrent first calls must share one launch instead of leaking a second
   // browser process.
   private launching: Promise<Result<Page>> | null = null;
+  private readonly launcher: BrowserLauncher;
+
+  /**
+   * @param launcher - Browser process factory; defaults to real Chromium.
+   */
+  constructor(launcher: BrowserLauncher = launchChromium) {
+    this.launcher = launcher;
+  }
 
   /**
    * Launch the browser if needed and return the persistent page. Idempotent:
@@ -87,7 +103,7 @@ export class BrowserManager {
     }
 
     try {
-      this.browser = await chromium.launch(options);
+      this.browser = await this.launcher(options);
     } catch (err) {
       const cause = err instanceof Error ? err.message : String(err);
       if (isMissingBrowserCause(cause)) {
@@ -108,7 +124,9 @@ export class BrowserManager {
       this.page = await this.context.newPage();
     } catch (err) {
       const cause = err instanceof Error ? err.message : String(err);
-      const closed = await this.close();
+      // closeRefs, not close(): close() awaits `this.launching`, which is this
+      // very promise — awaiting it here would deadlock.
+      const closed = await this.closeRefs();
       const closeSuffix = closed.ok ? "" : ` (cleanup also failed: ${closed.error})`;
       return { ok: false, error: `Browser launched but opening a page failed: ${cause}${closeSuffix}` };
     }
@@ -162,6 +180,17 @@ export class BrowserManager {
    * close failure message.
    */
   async close(): Promise<Result<void>> {
+    // A close during the first launch must not race past launchFresh():
+    // snapshotting `this.browser` before launch assigns it would leave the
+    // freshly-launched browser alive after shutdown. Wait for the in-flight
+    // launch to settle, then tear down whatever it produced.
+    while (this.launching) {
+      await this.launching;
+    }
+    return this.closeRefs();
+  }
+
+  private async closeRefs(): Promise<Result<void>> {
     const browser = this.browser;
     this.browser = null;
     this.context = null;
