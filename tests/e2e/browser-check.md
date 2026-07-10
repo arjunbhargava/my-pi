@@ -3,7 +3,8 @@
 Live-verifies the `browser_check` tool (`src/extensions/browser/`) end to end
 against a real headless Chromium and a real local static server. This is a
 tester artifact, not a unit test: it exercises the actual tool code path
-(`registerBrowserCheck` → `execute`) against real pixels and real page signals.
+(extension entry point → `browser_check` `execute`) against real pixels and
+real page signals.
 
 Status of the last run is recorded at the bottom under "Last live run".
 
@@ -38,12 +39,13 @@ in-page fetch, no cost beyond the one-time ~150 MB Chromium download.
   - `fetch("/__fixture_missing_resource__.json")` → HTTP 404 (a failed request);
   - an asynchronous `throw new Error("FIXTURE_UNCAUGHT_EXCEPTION: ...")` (a
     `pageerror`).
-- `tests/e2e/browser-check-driver.mts` — the driver. It builds the same wiring
-  the extension entry point uses (`BrowserManager`, `SignalBuffer`, pi's
-  `resizeImage`), captures the registered `browser_check` definition, serves the
-  fixture with `python3 -m http.server`, and calls `execute` across all modes,
-  asserting on the returned content array and details. Tears down the browser
-  and the server unconditionally (even on failure).
+- `tests/e2e/browser-check-driver.mts` — the driver. It registers the real
+  extension entry point (`src/extensions/browser/browser.ts`) against a minimal
+  fake `ExtensionAPI` that captures the `browser_check` definition and the
+  `session_shutdown` handler, serves the fixture with `python3 -m http.server`,
+  and calls `execute` across all modes, asserting on the returned content array
+  and details. Tears down the browser (via the captured shutdown handler) and
+  the server unconditionally (even on failure).
 
 ## Run
 
@@ -82,23 +84,25 @@ Mapped to the task's numbered flow:
   actionable message containing `node node_modules/playwright-core/cli.js
   install` and the `--only-shell` alternative — not a raw stack trace. This can
   only be reproduced on a machine with no Chromium binary; where a browser is
-  installed, the case is covered by the unit test (task aaf847f4) rather than
-  re-run live.
+  installed, the case is covered by the unit tests rather than re-run live.
 
 ## Last live run
 
-Run on 2026-07-09, macOS (arm64), `node v24.14.1`, `python3 3.12.7`,
-`playwright-core@1.60.0`, Chrome Headless Shell 148.0.7778.96 (chromium v1223).
+Run on 2026-07-10, macOS (arm64), `node v24.14.1`, `python3 3.12.7`,
+`playwright-core@1.60.0`, Chrome Headless Shell (chromium v1223), with the
+driver wired through the extension entry point.
 
-- Step 6 (missing-browser) verified first, before installing Chromium:
-  `launch()` returned the actionable install message (with `--only-shell`),
-  `is a raw stack trace: false`.
-- `npx tsx tests/e2e/browser-check-driver.mts` → **ALL PASS** (17/17), exit 0:
+- `npx tsx tests/e2e/browser-check-driver.mts` → **ALL PASS** (16/16), exit 0:
   - A: 1 image, `1440px` wide, signals text contained all four classes.
-  - B: drained clean; `cold=2395ms warm=19ms` (warm ≈ 126x faster).
+  - B: drained clean; `cold=1053ms warm=14ms` (warm ≈ 75x faster).
   - C: two images `390px, 1440px`.
   - D: one image `element:#crop-target`, `200x51`.
-- Teardown re-queried and confirmed: no `chrome-headless-shell`/`chromium`
-  process, no `http.server`, no listener on port 8099.
+- Teardown went through the captured `session_shutdown` handler (browser
+  closed with no warnings) and killed the static server. Re-queried and
+  confirmed: no `chrome-headless-shell`/`chromium` process, no `http.server`,
+  no listener on port 8099.
 - Saved screenshot `/tmp/browser-check-viewport.png` (1440x900 PNG) rendered the
   fixture correctly (blue header, green crop target, three-column layout).
+- Step 6 (missing-browser) was verified on 2026-07-09, before installing
+  Chromium: `launch()` returned the actionable install message (with
+  `--only-shell`), `is a raw stack trace: false`.

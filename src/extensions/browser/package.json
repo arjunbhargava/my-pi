@@ -1,5 +1,6 @@
 {
   "name": "pi-browser",
+  "type": "module",
   "pi": {
     "extensions": ["./browser.ts"]
   }

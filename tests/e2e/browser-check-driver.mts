@@ -1,34 +1,32 @@
 /**
- * Live-verification driver for the `browser_check` tool (task 83413a7b).
+ * Live-verification driver for the `browser_check` tool.
  *
- * Exercises the REAL tool code path — not a mock. It constructs the same
- * wiring the extension entry point (src/extensions/browser/browser.ts) uses:
- * a BrowserManager, a SignalBuffer, and pi's resizeImage, passed to
- * registerBrowserCheck. It captures the registered tool definition and calls
- * its execute() against a locally served fixture page, then asserts on the
- * returned content array and details.
+ * Exercises the REAL tool code path — not a mock. It registers the extension
+ * entry point (src/extensions/browser/browser.ts) against a minimal fake
+ * ExtensionAPI that captures the registered tool definition and the
+ * session_shutdown handler, then calls the tool's execute() against a locally
+ * served fixture page and asserts on the returned content array and details.
+ * Teardown goes through the captured shutdown handler, same as a real session.
  *
  * Prereqs (see tests/e2e/browser-check.md for the full checklist):
  *   - npm install (playwright-core, @earendil-works/*, tsx)
  *   - node node_modules/playwright-core/cli.js install chromium
  *   - python3 on PATH (used to serve the fixture)
  *
- * Run:  npx tsx tests/e2e/browser-check-driver.ts
+ * Run:  npx tsx tests/e2e/browser-check-driver.mts
  * Exits 0 on all-pass, 1 on any failure. Tears down the browser and the
  * static server unconditionally.
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 import { writeFileSync } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
 
-import { resizeImage } from "@earendil-works/pi-coding-agent";
-
-import { BrowserManager } from "../../src/extensions/browser/manager.js";
-import { SignalBuffer } from "../../src/extensions/browser/signals.js";
-import { registerBrowserCheck, type ContentPart, type BrowserCheckDetails } from "../../src/extensions/browser/tools.js";
+import browserExtension from "../../src/extensions/browser/browser.js";
+import type { ContentPart } from "../../src/extensions/browser/result.js";
+import type { BrowserCheckDetails } from "../../src/extensions/browser/tools.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env["BC_PORT"] ?? 8099);
@@ -41,6 +39,9 @@ interface ToolResult {
   isError?: boolean;
 }
 type ToolDef = { execute(id: string, params: unknown): Promise<ToolResult> };
+
+type ShutdownCtx = { ui: { notify(message: string, level: string): void } };
+type ShutdownHandler = (event: unknown, ctx: ShutdownCtx) => Promise<void> | void;
 
 const failures: string[] = [];
 function check(label: string, cond: boolean, detail = ""): void {
@@ -71,21 +72,23 @@ async function waitForServer(url: string, tries = 50): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  const manager = new BrowserManager();
-  const signals = new SignalBuffer();
-
-  // Capture the tool definition registered by registerBrowserCheck.
+  // Register the real extension entry point against a fake ExtensionAPI that
+  // captures the tool definition and the session_shutdown handler.
   let tool: ToolDef | null = null;
-  registerBrowserCheck({
-    register: (def) => {
+  let shutdown: ShutdownHandler | null = null;
+  const fakePi = {
+    registerTool(def: unknown) {
       tool = def as ToolDef;
     },
-    manager,
-    signals,
-    resizeImage,
-  });
-  if (!tool) throw new Error("registerBrowserCheck did not register a tool");
+    on(event: string, handler: ShutdownHandler) {
+      if (event === "session_shutdown") shutdown = handler;
+    },
+  };
+  browserExtension(fakePi as unknown as Parameters<typeof browserExtension>[0]);
+  if (!tool) throw new Error("browserExtension did not register a tool");
+  if (!shutdown) throw new Error("browserExtension did not register a session_shutdown handler");
   const browserCheck: ToolDef = tool;
+  const shutdownHandler: ShutdownHandler = shutdown;
 
   // Serve the fixture directory with the exact server the checklist documents.
   const server: ChildProcess = spawn(
@@ -147,9 +150,10 @@ async function main(): Promise<void> {
       `${dImg?.widthPx}x${dImg?.heightPx}`,
     );
   } finally {
-    // --- Teardown (mandatory): close browser, kill static server. -----------
-    const closed = await manager.close();
-    console.log(`\nTeardown: browser closed = ${closed.ok}${closed.ok ? "" : ` (${closed.error})`}`);
+    // --- Teardown (mandatory): fire session_shutdown, kill static server. ---
+    const warnings: string[] = [];
+    await shutdownHandler(undefined, { ui: { notify: (message) => warnings.push(message) } });
+    console.log(`\nTeardown: browser closed = ${warnings.length === 0}${warnings.length > 0 ? ` (${warnings.join("; ")})` : ""}`);
     server.kill("SIGTERM");
     await delay(200);
     console.log(`Teardown: static server killed = ${server.killed}`);
