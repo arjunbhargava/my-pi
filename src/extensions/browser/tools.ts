@@ -9,8 +9,8 @@
  * received as opaque parameters so the entry point stays the sole importer.
  */
 
-import { Container, Image, type ImageTheme, Text } from "@earendil-works/pi-tui";
-import { Type } from "@sinclair/typebox";
+import { type Component, Container, Image, type ImageTheme, Text } from "@earendil-works/pi-tui";
+import { type Static, Type } from "@sinclair/typebox";
 
 import { capture, type CaptureOptions } from "./capture.js";
 import type { BrowserManager } from "./manager.js";
@@ -25,16 +25,21 @@ import {
 } from "./result.js";
 import type { PageEventSource, SignalBuffer } from "./signals.js";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- pi's registerTool uses complex generic types from typebox
-type ToolRegistrar = (def: any) => void;
+const browserCheckParameters = Type.Object({
+  url: Type.String({
+    description:
+      "Page to check, typically a local dev server URL. First call navigates; subsequent calls with the " +
+      "same url reuse the warm page (HMR-friendly).",
+  }),
+  fullPage: Type.Optional(Type.Boolean({ description: "Capture the full scrollable page. Default false (viewport only)." })),
+  selector: Type.Optional(Type.String({ description: "CSS selector: crop the screenshot to this element." })),
+  responsive: Type.Optional(Type.Boolean({ description: "Capture both 390px and 1440px viewports. Default false." })),
+  compareToPrevious: Type.Optional(Type.Boolean({
+    description: "Also include the previous screenshot from this session, labeled before/after. Default false.",
+  })),
+});
 
-interface BrowserCheckInput {
-  url: string;
-  fullPage?: boolean;
-  selector?: string;
-  responsive?: boolean;
-  compareToPrevious?: boolean;
-}
+type BrowserCheckInput = Static<typeof browserCheckParameters>;
 
 /** Details attached to every browser_check result, used by renderResult. */
 export interface BrowserCheckDetails {
@@ -48,6 +53,40 @@ export interface BrowserCheckDetails {
   imageMimeType?: string;
   error?: string;
 }
+
+/** What execute returns; structurally compatible with pi's AgentToolResult. */
+interface BrowserCheckResult {
+  content: ContentPart[];
+  details: BrowserCheckDetails;
+  isError?: boolean;
+}
+
+/** Structural subset of pi's Theme used by the render callbacks. */
+interface RenderTheme {
+  fg(color: string, text: string): string;
+  bold(text: string): string;
+}
+
+/**
+ * Structural subset of pi's ToolDefinition covering exactly the fields this
+ * tool provides. `parameters` is typed as the concrete schema (not a bare
+ * TObject) so pi infers precise param types for execute/renderCall, keeping
+ * the strict function-type checks at the registration site satisfied.
+ */
+interface BrowserCheckToolDefinition {
+  name: string;
+  label: string;
+  description: string;
+  promptSnippet: string;
+  promptGuidelines: string[];
+  parameters: typeof browserCheckParameters;
+  execute(toolCallId: string, params: BrowserCheckInput): Promise<BrowserCheckResult>;
+  renderCall(args: BrowserCheckInput, theme: RenderTheme): Component;
+  /** `details` is optional here: pi may render partial/streaming results. */
+  renderResult(result: { details?: BrowserCheckDetails }, options: unknown, theme: RenderTheme): Component;
+}
+
+type ToolRegistrar = (definition: BrowserCheckToolDefinition) => void;
 
 /** Everything the tool needs, wired up by the extension entry point. */
 export interface BrowserCheckWiring {
@@ -63,9 +102,9 @@ function describeMode(params: BrowserCheckInput): string {
   return params.fullPage ? "fullPage" : "viewport";
 }
 
-function errorResult(message: string, url: string, mode: string) {
+function errorResult(message: string, url: string, mode: string): BrowserCheckResult {
   const details: BrowserCheckDetails = { url, mode, images: [], summary: message, error: message };
-  return { content: [{ type: "text", text: message }] as ContentPart[], details, isError: true };
+  return { content: [{ type: "text", text: message }], details, isError: true };
 }
 
 /**
@@ -104,21 +143,9 @@ export function registerBrowserCheck(wiring: BrowserCheckWiring): void {
         "long pages downscale into illegibility; a selector crop preserves typography detail).",
       "Set compareToPrevious: true after making a change to judge before/after instead of re-reasoning from scratch.",
     ],
-    parameters: Type.Object({
-      url: Type.String({
-        description:
-          "Page to check, typically a local dev server URL. First call navigates; subsequent calls with the " +
-          "same url reuse the warm page (HMR-friendly).",
-      }),
-      fullPage: Type.Optional(Type.Boolean({ description: "Capture the full scrollable page. Default false (viewport only)." })),
-      selector: Type.Optional(Type.String({ description: "CSS selector: crop the screenshot to this element." })),
-      responsive: Type.Optional(Type.Boolean({ description: "Capture both 390px and 1440px viewports. Default false." })),
-      compareToPrevious: Type.Optional(Type.Boolean({
-        description: "Also include the previous screenshot from this session, labeled before/after. Default false.",
-      })),
-    }),
+    parameters: browserCheckParameters,
 
-    async execute(_toolCallId: string, params: BrowserCheckInput) {
+    async execute(_toolCallId, params) {
       const mode = describeMode(params);
 
       const launched = await manager.launch();
@@ -173,17 +200,15 @@ export function registerBrowserCheck(wiring: BrowserCheckWiring): void {
       return { content: buildCheckContent(signalsText, images, previousImage), details };
     },
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- theme type from pi
-    renderCall(args: BrowserCheckInput, theme: any) {
+    renderCall(args, theme) {
       const text =
         theme.fg("toolTitle", theme.bold("browser_check ")) +
         theme.fg("muted", `${args.url} (${describeMode(args)})`);
       return new Text(text, 0, 0);
     },
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- result/theme/options types from pi
-    renderResult(result: any, _options: any, theme: any) {
-      const details = result.details as BrowserCheckDetails | undefined;
+    renderResult(result, _options, theme) {
+      const details = result.details;
       if (details?.error) return new Text(theme.fg("error", details.error), 0, 0);
 
       const summary = details?.summary ?? "no screenshot captured";
